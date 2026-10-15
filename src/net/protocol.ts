@@ -1,16 +1,17 @@
 import { ABILITY_SLOTS, CHAMPIONS, type AbilitySlot } from '../sim/defs';
 import type { Vec } from '../sim/math';
-import type { PlayerCommand, Projectile, SimEvent, Team, Unit } from '../sim/world';
+import type { Order, PlayerCommand, Projectile, SimEvent, Team, Unit } from '../sim/world';
 
 // Messages shared by the Colyseus server and the browser client. The server is
-// authoritative: clients send PlayerCommands, the server sends a Snapshot every tick.
+// authoritative: clients send numbered CommandMessages, the server sends a Snapshot every
+// tick, telling each client which of its commands it has applied so far.
 
 export const ROOM_NAME = 'duel';
 /** 2567 is the Colyseus default, so pick a neighbour to coexist with other Colyseus projects. */
 export const DEFAULT_PORT = 2568;
 
 export const MSG = {
-  /** client → server: a PlayerCommand */
+  /** client → server: a CommandMessage */
   command: 'cmd',
   /** server → client: Welcome, once after joining */
   welcome: 'welcome',
@@ -28,10 +29,29 @@ export interface Welcome {
   tickRate: number;
 }
 
+/**
+ * A command numbered by the client. `cmd` is omitted for calibration pings, which the
+ * server only acknowledges; that keeps the client's tick offset fresh while idle.
+ */
+export interface CommandMessage {
+  seq: number;
+  cmd?: PlayerCommand;
+}
+
+/** Per-client part of a snapshot. Only you see your own order, so it never leaks to the opponent. */
+export interface OwnState {
+  /** Highest command seq the server has received from you (-1 if none). */
+  ack: number;
+  /** Server tick whose step first simulated with that command. */
+  ackTick: number;
+  order: Order;
+}
+
 export interface UnitSnapshot {
   id: number;
   team: Team;
   champ: string;
+  spawn: Vec;
   pos: Vec;
   facing: number;
   hp: number;
@@ -40,6 +60,7 @@ export interface UnitSnapshot {
   windup: Unit['windup'];
   cast: Unit['cast'];
   cooldowns: Unit['cooldowns'];
+  statuses: Unit['statuses'];
   respawnIn: number;
 }
 
@@ -49,6 +70,7 @@ export interface Snapshot {
   projectiles: Projectile[];
   /** Events that happened during this tick. */
   events: SimEvent[];
+  you?: OwnState;
 }
 
 export function toUnitSnapshot(u: Unit): UnitSnapshot {
@@ -56,6 +78,7 @@ export function toUnitSnapshot(u: Unit): UnitSnapshot {
     id: u.id,
     team: u.team,
     champ: u.def.id,
+    spawn: u.spawn,
     pos: u.pos,
     facing: u.facing,
     hp: u.hp,
@@ -64,11 +87,12 @@ export function toUnitSnapshot(u: Unit): UnitSnapshot {
     windup: u.windup,
     cast: u.cast,
     cooldowns: u.cooldowns,
+    statuses: u.statuses,
     respawnIn: u.respawnIn,
   };
 }
 
-/** Rebuilds a renderable Unit on the client. Orders stay server-side, so they read as idle. */
+/** Rebuilds a Unit on the client. Other players' orders stay server-side, so they read as idle. */
 export function fromUnitSnapshot(s: UnitSnapshot): Unit {
   const def = CHAMPIONS[s.champ];
   if (!def) throw new Error(`Unknown champion "${s.champ}"`);
@@ -76,7 +100,7 @@ export function fromUnitSnapshot(s: UnitSnapshot): Unit {
     id: s.id,
     team: s.team,
     def,
-    spawn: s.pos,
+    spawn: s.spawn,
     pos: s.pos,
     facing: s.facing,
     hp: s.hp,
@@ -86,6 +110,7 @@ export function fromUnitSnapshot(s: UnitSnapshot): Unit {
     windup: s.windup,
     cast: s.cast,
     cooldowns: s.cooldowns,
+    statuses: s.statuses,
     respawnIn: s.respawnIn,
   };
 }
@@ -114,4 +139,12 @@ export function parsePlayerCommand(raw: unknown): PlayerCommand | null {
     default:
       return null;
   }
+}
+
+/** Validates an untrusted command message. A bad `cmd` is dropped but its seq is still acknowledged. */
+export function parseCommandMessage(raw: unknown): { seq: number; cmd: PlayerCommand | null } | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const { seq, cmd } = raw as Record<string, unknown>;
+  if (!Number.isSafeInteger(seq) || (seq as number) < 0) return null;
+  return { seq: seq as number, cmd: cmd === undefined ? null : parsePlayerCommand(cmd) };
 }

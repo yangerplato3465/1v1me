@@ -1,5 +1,5 @@
 import { StrafeBot } from '../sim/bot';
-import { MARKSMAN, TICK_RATE, WORLD_SIZE } from '../sim/defs';
+import { TICK_RATE, WAYFINDER, WORLD_SIZE } from '../sim/defs';
 import { dist, lerpVec, type Vec } from '../sim/math';
 import { World, type PlayerCommand, type Projectile, type SimEvent, type Unit } from '../sim/world';
 import type { Session } from './session';
@@ -20,8 +20,8 @@ export class OfflineSession implements Session {
 
   constructor() {
     const world = new World();
-    const player = world.addUnit(MARKSMAN, 'blue', { x: 700, y: WORLD_SIZE.height / 2 });
-    const enemy = world.addUnit(MARKSMAN, 'red', { x: WORLD_SIZE.width - 700, y: WORLD_SIZE.height / 2 });
+    const player = world.addUnit(WAYFINDER, 'blue', { x: 700, y: WORLD_SIZE.height / 2 });
+    const enemy = world.addUnit(WAYFINDER, 'red', { x: WORLD_SIZE.width - 700, y: WORLD_SIZE.height / 2 });
     this.view = world;
     this.playerId = player.id;
     this.bot = new StrafeBot(world, enemy.id, player.id);

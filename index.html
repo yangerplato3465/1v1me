@@ -20,16 +20,51 @@
       #menu button:disabled { opacity: 0.5; cursor: default; }
       #menu small { display: block; margin-top: 4px; font-weight: 400; color: #9aa7a0; font-size: 13px; }
       #menu-error { min-height: 1.4em; color: #ff8a8a; font-size: 14px; }
+      #menu button.secondary { border-color: #44515c; }
+      #settings { display: none; width: min(420px, calc(100vw - 32px)); text-align: left; gap: 14px; }
+      #menu.show-settings #settings { display: grid; }
+      #menu.show-settings #main { display: none; }
+      #main { display: grid; gap: 12px; }
+      #settings h2 { margin: 0; color: #c8aa6e; text-align: center; }
+      #settings label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; font-weight: 600; }
+      #settings select {
+        font: inherit; font-size: 14px; padding: 6px 8px; min-width: 220px;
+        color: #f4f1e8; background: #12251a; border: 1px solid #44515c; border-radius: 6px;
+      }
+      #settings fieldset { display: grid; gap: 10px; margin: 0; padding: 12px; border: 1px solid #2c3833; border-radius: 10px; }
+      #settings legend { padding: 0 6px; color: #9aa7a0; font-size: 13px; }
+      #settings .hint { margin: -6px 0 0; color: #9aa7a0; font-size: 13px; }
+      #settings .actions { display: flex; gap: 10px; }
+      #settings .actions button { min-width: 0; flex: 1; }
     </style>
   </head>
   <body>
     <div id="app"></div>
     <div id="menu">
       <h1>1v1me</h1>
-      <button data-mode="duel">Find a duel<small>Online 1v1 — open two tabs to test</small></button>
-      <button data-mode="practice">Online practice<small>You vs the bot, on the server</small></button>
-      <button data-mode="offline">Offline practice<small>No server needed</small></button>
-      <div id="menu-error"></div>
+      <div id="main">
+        <button data-mode="duel">Find a duel<small>Online 1v1 — open two tabs to test</small></button>
+        <button data-mode="practice">Online practice<small>You vs the bot, on the server</small></button>
+        <button data-mode="offline">Offline practice<small>No server needed</small></button>
+        <button class="secondary" id="open-settings">Settings</button>
+        <div id="menu-error"></div>
+      </div>
+      <form id="settings">
+        <h2>Settings</h2>
+        <label>Cast mode <select id="cast-default"></select></label>
+        <p class="hint" id="cast-hint"></p>
+        <fieldset>
+          <legend>Per-key override</legend>
+          <label>Q <select data-slot="Q"></select></label>
+          <label>W <select data-slot="W"></select></label>
+          <label>E <select data-slot="E"></select></label>
+          <label>R <select data-slot="R"></select></label>
+        </fieldset>
+        <div class="actions">
+          <button type="button" class="secondary" id="settings-back">Back</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

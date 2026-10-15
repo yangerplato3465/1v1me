@@ -40,7 +40,7 @@ export class StrafeBot {
     const dir = normalize(toFoe);
 
     const q = me.def.abilities.Q;
-    if (q && this.qIn <= 0 && d <= q.range && me.cooldowns.Q <= 0 && !me.cast) {
+    if (q?.kind === 'skillshot' && this.qIn <= 0 && d <= q.range && me.cooldowns.Q <= 0 && !me.cast) {
       this.world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: foe.pos });
       this.qIn = 2.5 + this.rng() * 2.5;
     }

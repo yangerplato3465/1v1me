@@ -54,7 +54,7 @@ describe('DuelRoom', () => {
     const startA = unitIn(s, wa.unitId)!.pos;
     const startB = unitIn(s, wb.unitId)!.pos;
     // The forged unitId must be ignored: commands always drive the sender's own unit.
-    a.room.send(MSG.command, { type: 'move', target: { x: startA.x, y: startA.y - 300 }, unitId: wb.unitId });
+    a.room.send(MSG.command, { seq: 0, cmd: { type: 'move', target: { x: startA.x, y: startA.y - 300 }, unitId: wb.unitId } });
 
     const moved = await until(() => {
       const u = unitIn(b.latest(), wa.unitId);
@@ -69,11 +69,14 @@ describe('DuelRoom', () => {
     const a = track(await client().create(ROOM_NAME, { practice: true }));
     const { unitId } = await a.welcome;
     const start = unitIn(await until(a.latest), unitId)!.pos;
-    a.room.send(MSG.command, { type: 'move', target: { x: 'nope', y: 1 } });
-    a.room.send(MSG.command, { type: 'cast', slot: 'Z', target: { x: 0, y: 0 } });
+    a.room.send(MSG.command, { seq: 0, cmd: { type: 'move', target: { x: 'nope', y: 1 } } });
+    a.room.send(MSG.command, { seq: 1, cmd: { type: 'cast', slot: 'Z', target: { x: 0, y: 0 } } });
+    a.room.send(MSG.command, { cmd: { type: 'move', target: { x: 0, y: 0 } } });
     a.room.send(MSG.command, 'garbage');
     await new Promise((r) => setTimeout(r, 200));
     expect(unitIn(a.latest(), unitId)!.pos).toEqual(start);
+    // Malformed commands are dropped, but valid seqs are still acknowledged.
+    expect(a.latest()!.you?.ack).toBe(1);
     await a.room.leave();
   });
 
@@ -113,6 +116,33 @@ describe('DuelRoom', () => {
     for (let i = 1; i < ys.length; i++) expect(ys[i]).toBeLessThanOrEqual(ys[i - 1] + 1e-6);
     expect(session.status()).toContain('online practice');
     await session.leave();
+  });
+
+  it('predicts your own champion through a real laggy connection', async () => {
+    server.simulateLatency(200);
+    try {
+      const session = await OnlineSession.connect(`http://localhost:${PORT}`, true);
+      const frame = async () => {
+        session.update(1 / 60);
+        await new Promise((r) => setTimeout(r, 16));
+      };
+      const me = () => session.view.units.get(session.playerId);
+      await until(async () => {
+        await frame();
+        return me();
+      });
+      for (let i = 0; i < 60; i++) await frame(); // let a calibration ping round-trip
+      expect(session.status()).toMatch(/round trip ~\d+ ms/);
+
+      const start = session.renderPos(me()!);
+      session.send({ type: 'move', target: { x: start.x, y: start.y - 400 } });
+      for (let i = 0; i < 3; i++) await frame();
+      // ~50 ms in: far less than the 200 ms round trip, yet the champion is already moving.
+      expect(session.renderPos(me()!).y).toBeLessThan(start.y - 5);
+      await session.leave();
+    } finally {
+      server.simulateLatency(0);
+    }
   });
 });
 

@@ -1,7 +1,7 @@
 import { Container, Graphics, Text } from 'pixi.js';
 import { clamp } from '../sim/math';
 import { ABILITY_SLOTS, type AbilitySlot } from '../sim/defs';
-import type { Unit } from '../sim/world';
+import { attackSpeedOf, type Unit } from '../sim/world';
 import { COLORS, FONT, MONO } from './theme';
 
 export interface HudInfo {
@@ -18,7 +18,7 @@ export interface HudInfo {
 const HELP = [
   'RMB      move / attack  (hold to keep moving)',
   'A + LMB  attack-move',
-  'Q W E R  hold to aim, release to cast  (RMB cancels)',
+  'Q W E R  cast (modes below; RMB cancels aiming)',
   'S        stop',
   'Space    center camera   Y  lock / unlock camera',
 ].join('\n');
@@ -111,13 +111,13 @@ export class Hud {
 
     const shownSlot = info.aiming ?? ABILITY_SLOTS.find((slot) => player.def.abilities[slot]);
     const shown = shownSlot && player.def.abilities[shownSlot];
-    this.abilityInfo.text = shown
-      ? `${shownSlot} · ${shown.name} · ${shown.range} range · ${shown.cooldown}s · ${shown.manaCost} mana`
-      : '';
+    const reach = !shown ? '' : shown.kind === 'blink' ? `${shown.range} blink` : shown.range >= 5000 ? 'global' : `${shown.range} range`;
+    this.abilityInfo.text = shown ? `${shownSlot} · ${shown.name} · ${reach} · ${shown.cooldown}s · ${shown.manaCost} mana` : '';
     this.abilityInfo.position.set(px + 16, py + 84);
 
     // Auto-attack timer: the orange segment is the windup, the rest is free to move.
-    const period = 1 / player.def.attackSpeed;
+    const attackSpeed = attackSpeedOf(player);
+    const period = 1 / attackSpeed;
     const wf = player.def.windupPct;
     const bx = px + 16;
     const by = py + PANEL_H - 22;
@@ -143,7 +143,12 @@ export class Hud {
     g.rect(bx + bw * wf, by, bw * (1 - wf), bh).fill({ color: 0x8a9aa6, alpha: 0.2 });
     g.rect(bx, by, bw * Math.min(progress, wf), bh).fill(COLORS.windup);
     if (progress > wf) g.rect(bx + bw * wf, by, bw * (progress - wf), bh).fill(0xdfe7ee);
-    this.attackState.text = `Auto attack · ${player.def.attackSpeed.toFixed(2)}/s · ${state}`;
+    const stacks = player.statuses.find((s) => s.kind === 'attackSpeed');
+    const passive =
+      stacks?.kind === 'attackSpeed' && player.def.passive
+        ? ` · ${player.def.passive.name} ×${stacks.stacks} (${stacks.remaining.toFixed(1)}s)`
+        : '';
+    this.attackState.text = `Auto attack · ${attackSpeed.toFixed(2)}/s · ${state}${passive}`;
     this.attackState.position.set(bx, by - 21);
 
     this.info.text = `${info.status}\n${Math.round(info.fps)} fps · sim ${info.tickRate} Hz · camera ${info.cameraLocked ? 'locked' : 'free'}`;

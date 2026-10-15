@@ -1,9 +1,12 @@
 import {
   ABILITY_SLOTS,
   RESPAWN_SECONDS,
+  TICK_RATE,
   WORLD_SIZE,
   type AbilitySlot,
+  type BlinkAbility,
   type ChampionDef,
+  type MarkEffect,
   type SkillshotAbility,
 } from './defs';
 import {
@@ -23,7 +26,7 @@ import {
 } from './math';
 
 // Pure game rules: no DOM, no rendering. The authoritative server runs this module; the
-// client runs it directly in offline practice and will reuse it for prediction.
+// client runs it directly in offline practice and reuses it for prediction.
 
 export type Team = 'blue' | 'red';
 
@@ -32,6 +35,11 @@ export type Order =
   | { kind: 'move'; target: Vec }
   | { kind: 'attack'; targetId: number }
   | { kind: 'attackMove'; target: Vec };
+
+/** Timed effects on a unit. */
+export type Status =
+  | { kind: 'attackSpeed'; stacks: number; perStack: number; remaining: number }
+  | { kind: 'mark'; sourceId: number; remaining: number; effect: MarkEffect };
 
 export interface Unit {
   id: number;
@@ -46,8 +54,9 @@ export interface Unit {
   /** Seconds until the next auto-attack may start. */
   attackCooldown: number;
   windup: { remaining: number; total: number; targetId: number } | null;
-  cast: { slot: AbilitySlot; remaining: number; total: number; dir: Vec } | null;
+  cast: { slot: AbilitySlot; remaining: number; total: number; dir: Vec; target: Vec } | null;
   cooldowns: Record<AbilitySlot, number>;
+  statuses: Status[];
   /** > 0 while dead. */
   respawnIn: number;
 }
@@ -62,6 +71,9 @@ export type PlayerCommand =
 
 export type Command = PlayerCommand & { unitId: number };
 
+/** What dealt a hit: an auto-attack or one of the attacker's ability slots. */
+export type HitSource = 'attack' | AbilitySlot;
+
 interface ProjectileBase {
   id: number;
   ownerId: number;
@@ -73,20 +85,26 @@ interface ProjectileBase {
   damage: number;
 }
 
-export interface AttackProjectile extends ProjectileBase {
-  kind: 'attack';
+/** Auto-attacks and homing ability bolts: they follow the target and cannot miss. */
+export interface HomingProjectile extends ProjectileBase {
+  kind: 'homing';
+  source: HitSource;
   targetId: number;
 }
 
 export interface SkillshotProjectile extends ProjectileBase {
   kind: 'skillshot';
+  slot: AbilitySlot;
   dir: Vec;
   width: number;
   range: number;
   travelled: number;
+  stopsAtFirstHit: boolean;
+  /** Units already hit, so a piercing missile hits each one once. */
+  hitIds: number[];
 }
 
-export type Projectile = AttackProjectile | SkillshotProjectile;
+export type Projectile = HomingProjectile | SkillshotProjectile;
 
 /** The read-only slice of game state the client renders: a World, or a mirror of server snapshots. */
 export interface GameView {
@@ -95,18 +113,33 @@ export interface GameView {
   isAlive(u: Unit): boolean;
 }
 
-export type DamageKind = 'attack' | 'skillshot';
-
 export type SimEvent =
-  | { type: 'damage'; targetId: number; sourceId: number; amount: number; kind: DamageKind; pos: Vec }
+  | { type: 'damage'; targetId: number; sourceId: number; amount: number; source: HitSource; detonation: boolean; pos: Vec }
   | { type: 'death'; unitId: number; killerId: number }
   | { type: 'respawn'; unitId: number }
   | { type: 'attackStart'; unitId: number }
-  | { type: 'attackFired'; unitId: number }
+  | { type: 'attackFired'; unitId: number; targetId: number }
   | { type: 'attackCanceled'; unitId: number }
   | { type: 'castStart'; unitId: number; slot: AbilitySlot }
-  | { type: 'castFired'; unitId: number; slot: AbilitySlot }
+  | { type: 'castFired'; unitId: number; slot: AbilitySlot; pos: Vec; dir: Vec }
+  | { type: 'blink'; unitId: number; from: Vec; to: Vec }
+  | { type: 'marked'; unitId: number; sourceId: number }
   | { type: 'skillshotExpired'; pos: Vec; team: Team };
+
+export interface WorldOptions {
+  /**
+   * False for the client's prediction copy: units still move, attack, cast and blink, but
+   * nothing spawns missiles or deals damage. Hits belong to the server alone.
+   */
+  authoritative?: boolean;
+}
+
+/**
+ * LoL's grace period: in the last game tick of a windup, move/stop commands no longer
+ * cancel the attack. Clicking away a hair early still lets the shot go, which makes
+ * orb-walking forgiving.
+ */
+const WINDUP_GRACE = 1 / TICK_RATE + 1e-9;
 
 /** An A-click this close to an enemy's edge targets that enemy directly. */
 const ATTACK_MOVE_SNAP = 200;
@@ -123,12 +156,24 @@ function clampToWorld(p: Vec): Vec {
   };
 }
 
+/** Attacks per second including bonus attack speed from statuses. */
+export function attackSpeedOf(u: Unit): number {
+  let bonus = 0;
+  for (const s of u.statuses) if (s.kind === 'attackSpeed') bonus += s.stacks * s.perStack;
+  return u.def.attackSpeed * (1 + bonus);
+}
+
 export class World {
   time = 0;
   readonly units = new Map<number, Unit>();
   projectiles: Projectile[] = [];
+  readonly authoritative: boolean;
   private nextId = 1;
   private events: SimEvent[] = [];
+
+  constructor(options: WorldOptions = {}) {
+    this.authoritative = options.authoritative ?? true;
+  }
 
   addUnit(def: ChampionDef, team: Team, spawn: Vec): Unit {
     const unit: Unit = {
@@ -145,6 +190,7 @@ export class World {
       windup: null,
       cast: null,
       cooldowns: noCooldowns(),
+      statuses: [],
       respawnIn: 0,
     };
     this.units.set(unit.id, unit);
@@ -161,11 +207,12 @@ export class World {
   }
 
   attackPeriod(u: Unit): number {
-    return 1 / u.def.attackSpeed;
+    return 1 / attackSpeedOf(u);
   }
 
+  /** Edge to edge, like LoL. */
   inAttackRange(u: Unit, target: Unit): boolean {
-    return dist(u.pos, target.pos) <= u.def.attackRange + target.def.radius;
+    return dist(u.pos, target.pos) <= u.def.attackRange + u.def.radius + target.def.radius;
   }
 
   drainEvents(): SimEvent[] {
@@ -214,9 +261,11 @@ export class World {
   // --- orders -------------------------------------------------------------
 
   private setOrder(u: Unit, order: Order): void {
-    // Spam-clicking the target you are already winding up on must not restart the attack.
+    // Spam-clicking the target you are already winding up on must not restart the attack,
+    // and in the grace tick at the end of a windup the attack is already committed.
     const sameTarget = order.kind === 'attack' && u.windup?.targetId === order.targetId;
-    if (!sameTarget) this.cancelWindup(u);
+    const committed = !!u.windup && u.windup.remaining <= WINDUP_GRACE;
+    if (!sameTarget && !committed) this.cancelWindup(u);
     u.order = order;
   }
 
@@ -237,7 +286,7 @@ export class World {
     u.mana -= ability.manaCost;
     u.cooldowns[slot] = ability.cooldown;
     u.facing = angleOf(dir);
-    u.cast = { slot, remaining: ability.castTime, total: ability.castTime, dir };
+    u.cast = { slot, remaining: ability.castTime, total: ability.castTime, dir, target: { ...target } };
     this.events.push({ type: 'castStart', unitId: u.id, slot });
   }
 
@@ -254,6 +303,8 @@ export class World {
     u.mana = Math.min(u.def.maxMana, u.mana + u.def.manaRegen * dt);
     for (const slot of ABILITY_SLOTS) u.cooldowns[slot] = Math.max(0, u.cooldowns[slot] - dt);
     u.attackCooldown = Math.max(0, u.attackCooldown - dt);
+    for (const s of u.statuses) s.remaining -= dt;
+    u.statuses = u.statuses.filter((s) => s.remaining > 0);
 
     // Rooted while casting. The order is kept, so a move resumes after the cast, like in LoL.
     if (u.cast) {
@@ -296,7 +347,7 @@ export class World {
         break;
       }
       case 'attackMove': {
-        const target = this.nearestEnemy(u, u.pos, u.def.attackRange);
+        const target = this.nearestEnemy(u, u.pos, u.def.attackRange + u.def.radius);
         if (target) u.order = { kind: 'attack', targetId: target.id };
         else if (this.moveToward(u, u.order.target, dt)) u.order = IDLE;
         break;
@@ -328,40 +379,50 @@ export class World {
   }
 
   private fireAttack(u: Unit, target: Unit): void {
-    this.events.push({ type: 'attackFired', unitId: u.id });
+    this.events.push({ type: 'attackFired', unitId: u.id, targetId: target.id });
+    if (!this.authoritative) return;
     if (u.def.attackProjectileSpeed <= 0) {
-      this.damage(target, u.id, u.def.attackDamage, 'attack');
+      this.hit(target, u.id, u.def.attackDamage, 'attack');
       return;
     }
-    const muzzle = add(u.pos, scale(fromAngle(u.facing), u.def.radius));
+    this.fireHoming(u, target, 'attack', u.def.attackProjectileSpeed, u.def.attackDamage);
+  }
+
+  private fireHoming(u: Unit, target: Unit, source: HitSource, speed: number, damage: number): void {
+    const muzzle = add(u.pos, scale(normalize(sub(target.pos, u.pos)), u.def.radius));
     this.projectiles.push({
-      kind: 'attack',
+      kind: 'homing',
       id: this.nextId++,
       ownerId: u.id,
       team: u.team,
       pos: muzzle,
       prev: { ...muzzle },
-      speed: u.def.attackProjectileSpeed,
-      damage: u.def.attackDamage,
+      speed,
+      damage,
+      source,
       targetId: target.id,
     });
   }
 
   private finishCast(u: Unit): void {
-    const { slot, dir } = u.cast!;
+    const { slot, dir, target } = u.cast!;
     u.cast = null;
     const ability = u.def.abilities[slot];
     if (!ability) return;
     switch (ability.kind) {
       case 'skillshot':
-        this.fireSkillshot(u, ability, dir);
+        if (this.authoritative) this.fireSkillshot(u, slot, ability, dir);
+        break;
+      case 'blink':
+        this.blink(u, slot, ability, dir, target);
         break;
     }
-    this.events.push({ type: 'castFired', unitId: u.id, slot });
+    this.events.push({ type: 'castFired', unitId: u.id, slot, pos: { ...u.pos }, dir });
   }
 
-  private fireSkillshot(u: Unit, q: SkillshotAbility, dir: Vec): void {
-    const start = add(u.pos, scale(dir, u.def.radius));
+  /** Skillshot range is measured from the caster's center, like LoL. */
+  private fireSkillshot(u: Unit, slot: AbilitySlot, ability: SkillshotAbility, dir: Vec): void {
+    const start = { ...u.pos };
     this.projectiles.push({
       kind: 'skillshot',
       id: this.nextId++,
@@ -369,13 +430,39 @@ export class World {
       team: u.team,
       pos: start,
       prev: { ...start },
-      speed: q.speed,
-      damage: q.damage,
+      speed: ability.speed,
+      damage: ability.damage,
+      slot,
       dir,
-      width: q.width,
-      range: q.range,
+      width: ability.width,
+      range: ability.range,
       travelled: 0,
+      stopsAtFirstHit: ability.stopsAtFirstHit,
+      hitIds: [],
     });
+  }
+
+  private blink(u: Unit, slot: AbilitySlot, ability: BlinkAbility, dir: Vec, target: Vec): void {
+    const from = { ...u.pos };
+    u.pos = clampToWorld(add(u.pos, scale(dir, Math.min(ability.range, dist(from, target)))));
+    this.events.push({ type: 'blink', unitId: u.id, from, to: { ...u.pos } });
+    if (!ability.bolt || !this.authoritative) return;
+
+    // Bolt the nearest enemy in range, preferring one carrying this unit's mark.
+    let best: Unit | null = null;
+    let bestScore = Infinity;
+    for (const other of this.units.values()) {
+      if (other.team === u.team || !this.isAlive(other)) continue;
+      const d = dist(u.pos, other.pos) - other.def.radius;
+      if (d > ability.bolt.range) continue;
+      const marked = other.statuses.some((s) => s.kind === 'mark' && s.sourceId === u.id);
+      const score = d - (marked ? 1e6 : 0);
+      if (score < bestScore) {
+        best = other;
+        bestScore = score;
+      }
+    }
+    if (best) this.fireHoming(u, best, slot, ability.bolt.speed, ability.bolt.damage);
   }
 
   private respawn(u: Unit): void {
@@ -386,6 +473,7 @@ export class World {
     u.order = IDLE;
     u.attackCooldown = 0;
     u.cooldowns = noCooldowns();
+    u.statuses = [];
     this.events.push({ type: 'respawn', unitId: u.id });
   }
 
@@ -409,14 +497,13 @@ export class World {
     const survivors: Projectile[] = [];
     for (const p of this.projectiles) {
       p.prev = { ...p.pos };
-      const alive = p.kind === 'attack' ? this.stepAttackProjectile(p, dt) : this.stepSkillshot(p, dt);
+      const alive = p.kind === 'homing' ? this.stepHoming(p, dt) : this.stepSkillshot(p, dt);
       if (alive) survivors.push(p);
     }
     this.projectiles = survivors;
   }
 
-  /** Auto-attacks home in and cannot miss (unless the target dies first). */
-  private stepAttackProjectile(p: AttackProjectile, dt: number): boolean {
+  private stepHoming(p: HomingProjectile, dt: number): boolean {
     const target = this.units.get(p.targetId);
     if (!target || !this.isAlive(target)) return false;
     const to = sub(target.pos, p.pos);
@@ -424,32 +511,34 @@ export class World {
     const stepLen = p.speed * dt;
     if (d <= stepLen) {
       p.pos = { ...target.pos };
-      this.damage(target, p.ownerId, p.damage, 'attack');
+      this.hit(target, p.ownerId, p.damage, p.source);
       return false;
     }
     p.pos = add(p.pos, scale(to, stepLen / d));
     return true;
   }
 
-  /** Skillshots fly straight and stop on the first enemy they touch. */
+  /** Skillshots fly straight; they stop on the first enemy or pierce, per the ability. */
   private stepSkillshot(p: SkillshotProjectile, dt: number): boolean {
     const stepLen = Math.min(p.speed * dt, p.range - p.travelled);
     const next = add(p.pos, scale(p.dir, stepLen));
 
-    let hit: Unit | null = null;
-    let hitAt = Infinity;
+    const hits: { unit: Unit; at: number }[] = [];
     for (const u of this.units.values()) {
-      if (u.team === p.team || !this.isAlive(u)) continue;
-      const t = segmentCircleHit(p.pos, next, u.pos, u.def.radius + p.width / 2);
-      if (t !== null && t < hitAt) {
-        hit = u;
-        hitAt = t;
-      }
+      if (u.team === p.team || !this.isAlive(u) || p.hitIds.includes(u.id)) continue;
+      const at = segmentCircleHit(p.pos, next, u.pos, u.def.radius + p.width / 2);
+      if (at !== null) hits.push({ unit: u, at });
     }
-    if (hit) {
-      p.pos = lerpVec(p.pos, next, hitAt);
-      this.damage(hit, p.ownerId, p.damage, 'skillshot');
+    hits.sort((a, b) => a.at - b.at);
+
+    if (p.stopsAtFirstHit && hits.length) {
+      p.pos = lerpVec(p.pos, next, hits[0].at);
+      this.hit(hits[0].unit, p.ownerId, p.damage, p.slot);
       return false;
+    }
+    for (const { unit } of hits) {
+      p.hitIds.push(unit.id);
+      this.hit(unit, p.ownerId, p.damage, p.slot);
     }
 
     p.pos = next;
@@ -461,15 +550,63 @@ export class World {
     return true;
   }
 
-  private damage(target: Unit, sourceId: number, amount: number, kind: DamageKind): void {
+  // --- hits ---------------------------------------------------------------
+
+  /** Resolves one landed attack or ability: damage, mark detonation, then on-hit effects. */
+  private hit(target: Unit, sourceId: number, amount: number, source: HitSource): void {
+    if (!this.isAlive(target)) return;
+    const attacker = this.units.get(sourceId);
+    const ability = attacker && source !== 'attack' ? attacker.def.abilities[source] : undefined;
+    const appliesMark = ability?.kind === 'skillshot' ? ability.onHit?.mark : undefined;
+
+    if (amount > 0) this.damage(target, sourceId, amount, source, false);
+
+    // The attacker's own mark detonates on their next attack or ability, except the one that applies marks.
+    const markIndex = target.statuses.findIndex((s) => s.kind === 'mark' && s.sourceId === sourceId);
+    if (markIndex >= 0 && !appliesMark && this.isAlive(target)) {
+      const mark = target.statuses[markIndex] as Extract<Status, { kind: 'mark' }>;
+      target.statuses.splice(markIndex, 1);
+      this.damage(target, sourceId, mark.effect.detonateDamage, source, true);
+      if (attacker && ability) {
+        attacker.mana = Math.min(attacker.def.maxMana, attacker.mana + mark.effect.abilityManaRefund + ability.manaCost);
+      }
+    }
+
+    if (!attacker || !ability) return;
+    const onHit = ability.kind === 'skillshot' ? ability.onHit : undefined;
+    if (onHit?.reduceCooldowns) {
+      for (const slot of ABILITY_SLOTS) attacker.cooldowns[slot] = Math.max(0, attacker.cooldowns[slot] - onHit.reduceCooldowns);
+    }
+    if (appliesMark && this.isAlive(target)) {
+      target.statuses = target.statuses.filter((s) => !(s.kind === 'mark' && s.sourceId === sourceId));
+      target.statuses.push({ kind: 'mark', sourceId, remaining: appliesMark.duration, effect: appliesMark });
+      this.events.push({ type: 'marked', unitId: target.id, sourceId });
+    }
+    this.grantPassiveStack(attacker);
+  }
+
+  private grantPassiveStack(u: Unit): void {
+    const passive = u.def.passive;
+    if (!passive || !this.isAlive(u)) return;
+    const status = u.statuses.find((s) => s.kind === 'attackSpeed');
+    if (status) {
+      status.stacks = Math.min(passive.maxStacks, status.stacks + 1);
+      status.remaining = passive.duration;
+    } else {
+      u.statuses.push({ kind: 'attackSpeed', stacks: 1, perStack: passive.perStack, remaining: passive.duration });
+    }
+  }
+
+  private damage(target: Unit, sourceId: number, amount: number, source: HitSource, detonation: boolean): void {
     if (!this.isAlive(target)) return;
     target.hp = Math.max(0, target.hp - amount);
-    this.events.push({ type: 'damage', targetId: target.id, sourceId, amount, kind, pos: { ...target.pos } });
+    this.events.push({ type: 'damage', targetId: target.id, sourceId, amount, source, detonation, pos: { ...target.pos } });
     if (target.hp > 0) return;
     target.respawnIn = RESPAWN_SECONDS;
     target.order = IDLE;
     target.windup = null;
     target.cast = null;
+    target.statuses = [];
     this.events.push({ type: 'death', unitId: target.id, killerId: sourceId });
   }
 }

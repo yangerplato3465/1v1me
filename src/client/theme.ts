@@ -1,3 +1,4 @@
+import type { ChampionDef } from '../sim/defs';
 import type { Team } from '../sim/world';
 
 export const COLORS = {
@@ -21,3 +22,6 @@ export const MONO = 'ui-monospace, Menlo, Consolas, monospace';
 
 export const teamColor = (team: Team): number => (team === 'blue' ? COLORS.blue : COLORS.red);
 export const teamLight = (team: Team): number => (team === 'blue' ? COLORS.blueLight : COLORS.redLight);
+
+/** Visual body size. The hitbox (def.radius, 65 like LoL) is wider than the drawn body, as in LoL. */
+export const bodyRadius = (def: ChampionDef): number => def.radius * 0.55;

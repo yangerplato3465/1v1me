@@ -10,6 +10,8 @@ import {
 } from '../net/protocol';
 import { clamp, dist, lerpVec, type Vec } from '../sim/math';
 import type { GameView, PlayerCommand, Projectile, SimEvent, Unit } from '../sim/world';
+import { CosmeticMissiles } from './cosmetic';
+import { Predictor } from './prediction';
 import type { Session } from './session';
 
 /**
@@ -22,6 +24,10 @@ const RESYNC_TICKS = 4;
 const MAX_FRAMES = 60;
 const SNAP_DISTANCE = 200;
 const WELCOME_TIMEOUT_MS = 5000;
+/** Idle clients still ping this often so the prediction offset tracks latency changes. */
+const CALIBRATE_SECONDS = 1;
+/** Your own events that prediction shows instantly; the server's later copies are dropped. */
+const PREDICTED_EVENTS = new Set<SimEvent['type']>(['attackStart', 'attackFired', 'attackCanceled', 'castStart', 'castFired', 'blink']);
 
 interface Frame {
   tick: number;
@@ -43,9 +49,9 @@ export function defaultServerUrl(): string {
 }
 
 /**
- * Mirrors the authoritative server. Everything, including your own champion, is drawn
- * from interpolated snapshots, so your inputs show up one round trip late. Client-side
- * prediction for your own champion is the next step.
+ * Mirrors the authoritative server. Other units are drawn from interpolated snapshots
+ * about 2 ticks in the past. Your own champion is predicted (see Predictor) so it
+ * responds instantly, unless prediction is turned off for comparison.
  */
 export class OnlineSession implements Session {
   readonly view = new MirrorView();
@@ -60,12 +66,16 @@ export class OnlineSession implements Session {
   private to: Frame | null = null;
   private alpha = 0;
   private disconnected = false;
+  private predictor: Predictor | null = null;
+  private readonly cosmetic = new CosmeticMissiles();
+  private serverProjectiles: Projectile[] = [];
+  private calibrateIn = 0;
 
-  static async connect(endpoint: string, practice: boolean): Promise<OnlineSession> {
+  static async connect(endpoint: string, practice: boolean, predict = true): Promise<OnlineSession> {
     const client = new Client(endpoint);
     const options: JoinOptions = practice ? { practice: true } : {};
     const room = practice ? await client.create(ROOM_NAME, options) : await client.joinOrCreate(ROOM_NAME, options);
-    const session = new OnlineSession(room, practice);
+    const session = new OnlineSession(room, practice, predict);
     await session.welcomed;
     return session;
   }
@@ -75,6 +85,7 @@ export class OnlineSession implements Session {
   private constructor(
     private readonly room: Room,
     private readonly practice: boolean,
+    private readonly predict: boolean,
   ) {
     this.note = practice
       ? 'Online practice: the bot runs on the server.'
@@ -88,6 +99,7 @@ export class OnlineSession implements Session {
         clearTimeout(timer);
         this.playerId = w.unitId;
         this.tickRate = w.tickRate;
+        this.predictor = new Predictor(w.unitId, w.tickRate);
         resolve();
       });
     });
@@ -98,7 +110,8 @@ export class OnlineSession implements Session {
   }
 
   send(cmd: PlayerCommand): void {
-    if (!this.disconnected) this.room.send(MSG.command, cmd);
+    // Commands always go through the predictor: it numbers them, even with prediction off.
+    if (this.predictor && !this.disconnected) this.room.send(MSG.command, this.predictor.issue(cmd));
   }
 
   update(dt: number): SimEvent[] {
@@ -121,15 +134,40 @@ export class OnlineSession implements Session {
 
     // Release events in step with what is drawn, so a hit number appears when the missile lands.
     const ready: SimEvent[] = [];
-    while (this.pending.length && this.pending[0].tick <= this.renderTick) ready.push(this.pending.shift()!.event);
+    while (this.pending.length && this.pending[0].tick <= this.renderTick) {
+      const event = this.pending.shift()!.event;
+      if (!(this.predict && this.isOwnPredicted(event))) ready.push(event);
+    }
+
+    if (this.predictor) {
+      this.predictor.update(dt);
+      this.calibrateIn -= dt;
+      if (this.calibrateIn <= 0 && !this.disconnected) {
+        this.room.send(MSG.command, this.predictor.calibration());
+        this.calibrateIn = CALIBRATE_SECONDS;
+      }
+      this.showPrediction();
+      const predicted = this.predictor.drainEvents();
+      if (this.predict) {
+        for (const event of predicted) this.spawnCosmetic(event);
+        ready.push(...predicted);
+      }
+    }
+    this.cosmetic.update(dt, this.view.units.values(), (u) => this.renderPos(u));
+    this.showProjectiles();
     return ready;
   }
 
   renderPos(u: Unit): Vec {
+    if (this.predict && u.id === this.playerId) {
+      const predicted = this.predictor?.renderPos();
+      if (predicted) return predicted;
+    }
     return this.interpolate(this.from?.units.get(u.id), this.to?.units.get(u.id)) ?? u.pos;
   }
 
   projectilePos(p: Projectile): Vec {
+    if (p.id < 0) return p.pos; // cosmetic: already advanced per frame
     return this.interpolate(this.from?.projectiles.get(p.id), this.to?.projectiles.get(p.id)) ?? p.pos;
   }
 
@@ -137,7 +175,10 @@ export class OnlineSession implements Session {
     if (this.disconnected) return 'disconnected from server';
     const mode = this.practice ? 'online practice' : 'online duel';
     const waiting = !this.practice && this.view.units.size < 2 ? ' · waiting for opponent…' : '';
-    return `${mode} · room ${this.room.roomId}${waiting}`;
+    const ahead = this.predictor?.ticksAhead;
+    const rtt = ahead === null || ahead === undefined ? '…' : `~${Math.round((ahead * 1000) / this.tickRate)} ms`;
+    const prediction = this.predict ? 'prediction on' : 'prediction off';
+    return `${mode} · room ${this.room.roomId}${waiting}\nround trip ${rtt} · ${prediction}`;
   }
 
   private interpolate(a: Vec | undefined, b: Vec | undefined): Vec | null {
@@ -149,7 +190,8 @@ export class OnlineSession implements Session {
     if (s.tick <= this.latestTick) return;
     this.latestTick = s.tick;
     this.view.units = new Map(s.units.map((u) => [u.id, fromUnitSnapshot(u)]));
-    this.view.projectiles = s.projectiles;
+    this.serverProjectiles = s.projectiles;
+    this.showProjectiles();
     this.frames.push({
       tick: s.tick,
       units: new Map(s.units.map((u) => [u.id, u.pos])),
@@ -157,5 +199,36 @@ export class OnlineSession implements Session {
     });
     if (this.frames.length > MAX_FRAMES) this.frames.shift();
     for (const event of s.events) this.pending.push({ tick: s.tick, event });
+    this.predictor?.onSnapshot(s);
+    this.showPrediction();
+  }
+
+  private isOwnPredicted(event: SimEvent): boolean {
+    return PREDICTED_EVENTS.has(event.type) && 'unitId' in event && event.unitId === this.playerId;
+  }
+
+  /** Your released attacks and skillshots fly immediately as local, visual-only missiles. */
+  private spawnCosmetic(event: SimEvent): void {
+    const me = this.view.units.get(this.playerId);
+    if (!me) return;
+    if (event.type === 'attackFired' && me.def.attackProjectileSpeed > 0) {
+      this.cosmetic.attack(me, event.targetId, this.renderPos(me));
+    } else if (event.type === 'castFired') {
+      const ability = me.def.abilities[event.slot];
+      if (ability?.kind === 'skillshot') this.cosmetic.skillshot(me, event.slot, ability, this.renderPos(me), event.dir);
+    }
+  }
+
+  /** Server missiles, minus the ones of yours already drawn as cosmetic copies. */
+  private showProjectiles(): void {
+    const hideOwn = (p: Projectile) =>
+      this.predict && p.ownerId === this.playerId && (p.kind === 'skillshot' || p.source === 'attack');
+    this.view.projectiles = [...this.serverProjectiles.filter((p) => !hideOwn(p)), ...this.cosmetic.list];
+  }
+
+  /** Swaps the predicted champion into the view, so the HUD shows instant cooldowns and windups too. */
+  private showPrediction(): void {
+    const predicted = this.predict ? this.predictor?.unit() : null;
+    if (predicted) this.view.units.set(this.playerId, predicted);
   }
 }

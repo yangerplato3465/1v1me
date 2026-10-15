@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { MARKSMAN, TICK_RATE } from './defs';
+import { MARKSMAN, TICK_RATE, type SkillshotAbility } from './defs';
 import { World, type SimEvent } from './world';
 
 const STEP = 1 / TICK_RATE;
-const Q = MARKSMAN.abilities.Q!;
+const Q = MARKSMAN.abilities.Q as SkillshotAbility;
 
 function setup(enemyX = 900) {
   const world = new World();
@@ -72,7 +72,7 @@ describe('Q skillshot', () => {
     world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: foe.pos });
     const hits = damageTo(run(world, 1.5), foe.id);
     expect(hits).toHaveLength(1);
-    expect(hits[0]).toMatchObject({ kind: 'skillshot', amount: Q.damage });
+    expect(hits[0]).toMatchObject({ source: 'Q', amount: Q.damage });
   });
 
   it('misses when aimed away and expires at max range', () => {
@@ -100,3 +100,37 @@ describe('Q skillshot', () => {
     expect(me.mana).toBe(MARKSMAN.maxMana);
   });
 });
+
+describe('LoL attack details', () => {
+  it('commits the attack in the last tick of the windup: moving then no longer cancels it', () => {
+    const windupTicks = Math.round((MARKSMAN.windupPct / MARKSMAN.attackSpeed) * TICK_RATE); // 8
+
+    const early = setup();
+    early.world.issue({ type: 'attack', unitId: early.me.id, targetId: early.foe.id });
+    run(early.world, (windupTicks - 1) / TICK_RATE); // two ticks of windup left
+    early.world.issue({ type: 'move', unitId: early.me.id, target: { x: 200, y: 800 } });
+    expect(damageTo(run(early.world, 1), early.foe.id)).toHaveLength(0);
+
+    const late = setup();
+    late.world.issue({ type: 'attack', unitId: late.me.id, targetId: late.foe.id });
+    run(late.world, windupTicks / TICK_RATE); // one tick left: the grace tick
+    late.world.issue({ type: 'move', unitId: late.me.id, target: { x: 200, y: 800 } });
+    expect(damageTo(run(late.world, 1), late.foe.id)).toHaveLength(1);
+    expect(late.me.pos.x).toBeLessThan(500); // and the move still happens right after
+  });
+
+  it('measures attack range edge to edge, like LoL', () => {
+    const reach = MARKSMAN.attackRange + 2 * MARKSMAN.radius;
+    const inRange = setup(500 + reach);
+    inRange.world.issue({ type: 'attack', unitId: inRange.me.id, targetId: inRange.foe.id });
+    run(inRange.world, 0.1);
+    expect(inRange.me.windup).not.toBeNull();
+    expect(inRange.me.pos.x).toBe(500);
+
+    const outOfRange = setup(500 + reach + 30);
+    outOfRange.world.issue({ type: 'attack', unitId: outOfRange.me.id, targetId: outOfRange.foe.id });
+    run(outOfRange.world, 0.05);
+    expect(outOfRange.me.pos.x).toBeGreaterThan(500);
+  });
+});
+
