@@ -1,4 +1,11 @@
-import { RESPAWN_SECONDS, WORLD_SIZE, type ChampionDef } from './defs';
+import {
+  ABILITY_SLOTS,
+  RESPAWN_SECONDS,
+  WORLD_SIZE,
+  type AbilitySlot,
+  type ChampionDef,
+  type SkillshotAbility,
+} from './defs';
 import {
   add,
   angleOf,
@@ -15,8 +22,8 @@ import {
   type Vec,
 } from './math';
 
-// Pure game rules: no DOM, no rendering. This module is meant to run unchanged on the
-// authoritative server later, and on the client for prediction.
+// Pure game rules: no DOM, no rendering. The authoritative server runs this module; the
+// client runs it directly in offline practice and will reuse it for prediction.
 
 export type Team = 'blue' | 'red';
 
@@ -39,18 +46,21 @@ export interface Unit {
   /** Seconds until the next auto-attack may start. */
   attackCooldown: number;
   windup: { remaining: number; total: number; targetId: number } | null;
-  cast: { remaining: number; total: number; dir: Vec } | null;
-  qCooldown: number;
+  cast: { slot: AbilitySlot; remaining: number; total: number; dir: Vec } | null;
+  cooldowns: Record<AbilitySlot, number>;
   /** > 0 while dead. */
   respawnIn: number;
 }
 
-export type Command =
-  | { type: 'move'; unitId: number; target: Vec }
-  | { type: 'attack'; unitId: number; targetId: number }
-  | { type: 'attackMove'; unitId: number; target: Vec }
-  | { type: 'castQ'; unitId: number; target: Vec }
-  | { type: 'stop'; unitId: number };
+/** What a player asks for. The server attaches the unitId it owns; clients never choose it. */
+export type PlayerCommand =
+  | { type: 'move'; target: Vec }
+  | { type: 'attack'; targetId: number }
+  | { type: 'attackMove'; target: Vec }
+  | { type: 'cast'; slot: AbilitySlot; target: Vec }
+  | { type: 'stop' };
+
+export type Command = PlayerCommand & { unitId: number };
 
 interface ProjectileBase {
   id: number;
@@ -78,6 +88,13 @@ export interface SkillshotProjectile extends ProjectileBase {
 
 export type Projectile = AttackProjectile | SkillshotProjectile;
 
+/** The read-only slice of game state the client renders: a World, or a mirror of server snapshots. */
+export interface GameView {
+  readonly units: ReadonlyMap<number, Unit>;
+  readonly projectiles: readonly Projectile[];
+  isAlive(u: Unit): boolean;
+}
+
 export type DamageKind = 'attack' | 'skillshot';
 
 export type SimEvent =
@@ -87,8 +104,8 @@ export type SimEvent =
   | { type: 'attackStart'; unitId: number }
   | { type: 'attackFired'; unitId: number }
   | { type: 'attackCanceled'; unitId: number }
-  | { type: 'castStart'; unitId: number }
-  | { type: 'castFired'; unitId: number }
+  | { type: 'castStart'; unitId: number; slot: AbilitySlot }
+  | { type: 'castFired'; unitId: number; slot: AbilitySlot }
   | { type: 'skillshotExpired'; pos: Vec; team: Team };
 
 /** An A-click this close to an enemy's edge targets that enemy directly. */
@@ -96,6 +113,8 @@ const ATTACK_MOVE_SNAP = 200;
 const WORLD_MARGIN = 40;
 
 const IDLE: Order = { kind: 'idle' };
+
+const noCooldowns = (): Record<AbilitySlot, number> => ({ Q: 0, W: 0, E: 0, R: 0 });
 
 function clampToWorld(p: Vec): Vec {
   return {
@@ -125,11 +144,16 @@ export class World {
       attackCooldown: 0,
       windup: null,
       cast: null,
-      qCooldown: 0,
+      cooldowns: noCooldowns(),
       respawnIn: 0,
     };
     this.units.set(unit.id, unit);
     return unit;
+  }
+
+  removeUnit(id: number): void {
+    this.units.delete(id);
+    this.projectiles = this.projectiles.filter((p) => p.ownerId !== id);
   }
 
   isAlive(u: Unit): boolean {
@@ -172,8 +196,8 @@ export class World {
         );
         break;
       }
-      case 'castQ':
-        this.castQ(u, cmd.target);
+      case 'cast':
+        this.cast(u, cmd.slot, cmd.target);
         break;
       case 'stop':
         this.setOrder(u, IDLE);
@@ -204,17 +228,17 @@ export class World {
     this.events.push({ type: 'attackCanceled', unitId: u.id });
   }
 
-  private castQ(u: Unit, target: Vec): void {
-    const q = u.def.q;
-    if (u.cast || u.qCooldown > 0 || u.mana < q.manaCost) return;
+  private cast(u: Unit, slot: AbilitySlot, target: Vec): void {
+    const ability = u.def.abilities[slot];
+    if (!ability || u.cast || u.cooldowns[slot] > 0 || u.mana < ability.manaCost) return;
     this.cancelWindup(u);
     let dir = normalize(sub(target, u.pos));
     if (dir.x === 0 && dir.y === 0) dir = fromAngle(u.facing);
-    u.mana -= q.manaCost;
-    u.qCooldown = q.cooldown;
+    u.mana -= ability.manaCost;
+    u.cooldowns[slot] = ability.cooldown;
     u.facing = angleOf(dir);
-    u.cast = { remaining: q.castTime, total: q.castTime, dir };
-    this.events.push({ type: 'castStart', unitId: u.id });
+    u.cast = { slot, remaining: ability.castTime, total: ability.castTime, dir };
+    this.events.push({ type: 'castStart', unitId: u.id, slot });
   }
 
   // --- unit step ----------------------------------------------------------
@@ -228,13 +252,13 @@ export class World {
 
     u.hp = Math.min(u.def.maxHp, u.hp + u.def.hpRegen * dt);
     u.mana = Math.min(u.def.maxMana, u.mana + u.def.manaRegen * dt);
-    u.qCooldown = Math.max(0, u.qCooldown - dt);
+    for (const slot of ABILITY_SLOTS) u.cooldowns[slot] = Math.max(0, u.cooldowns[slot] - dt);
     u.attackCooldown = Math.max(0, u.attackCooldown - dt);
 
     // Rooted while casting. The order is kept, so a move resumes after the cast, like in LoL.
     if (u.cast) {
       u.cast.remaining -= dt;
-      if (u.cast.remaining <= 0) this.fireSkillshot(u);
+      if (u.cast.remaining <= 0) this.finishCast(u);
       return;
     }
 
@@ -323,10 +347,20 @@ export class World {
     });
   }
 
-  private fireSkillshot(u: Unit): void {
-    const q = u.def.q;
-    const dir = u.cast!.dir;
+  private finishCast(u: Unit): void {
+    const { slot, dir } = u.cast!;
     u.cast = null;
+    const ability = u.def.abilities[slot];
+    if (!ability) return;
+    switch (ability.kind) {
+      case 'skillshot':
+        this.fireSkillshot(u, ability, dir);
+        break;
+    }
+    this.events.push({ type: 'castFired', unitId: u.id, slot });
+  }
+
+  private fireSkillshot(u: Unit, q: SkillshotAbility, dir: Vec): void {
     const start = add(u.pos, scale(dir, u.def.radius));
     this.projectiles.push({
       kind: 'skillshot',
@@ -342,7 +376,6 @@ export class World {
       range: q.range,
       travelled: 0,
     });
-    this.events.push({ type: 'castFired', unitId: u.id });
   }
 
   private respawn(u: Unit): void {
@@ -352,7 +385,7 @@ export class World {
     u.mana = u.def.maxMana;
     u.order = IDLE;
     u.attackCooldown = 0;
-    u.qCooldown = 0;
+    u.cooldowns = noCooldowns();
     this.events.push({ type: 'respawn', unitId: u.id });
   }
 

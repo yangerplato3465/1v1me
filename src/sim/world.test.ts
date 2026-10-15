@@ -3,6 +3,7 @@ import { MARKSMAN, TICK_RATE } from './defs';
 import { World, type SimEvent } from './world';
 
 const STEP = 1 / TICK_RATE;
+const Q = MARKSMAN.abilities.Q!;
 
 function setup(enemyX = 900) {
   const world = new World();
@@ -68,15 +69,15 @@ describe('auto-attack windup', () => {
 describe('Q skillshot', () => {
   it('hits an enemy standing in its path', () => {
     const { world, me, foe } = setup(1300);
-    world.issue({ type: 'castQ', unitId: me.id, target: foe.pos });
+    world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: foe.pos });
     const hits = damageTo(run(world, 1.5), foe.id);
     expect(hits).toHaveLength(1);
-    expect(hits[0]).toMatchObject({ kind: 'skillshot', amount: MARKSMAN.q.damage });
+    expect(hits[0]).toMatchObject({ kind: 'skillshot', amount: Q.damage });
   });
 
   it('misses when aimed away and expires at max range', () => {
     const { world, me, foe } = setup(1300);
-    world.issue({ type: 'castQ', unitId: me.id, target: { x: 1300, y: 0 } });
+    world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: { x: 1300, y: 0 } });
     const events = run(world, 1.5);
     expect(damageTo(events, foe.id)).toHaveLength(0);
     expect(events.some((e) => e.type === 'skillshotExpired')).toBe(true);
@@ -84,11 +85,18 @@ describe('Q skillshot', () => {
 
   it('spends mana once and respects the cooldown', () => {
     const { world, me } = setup();
-    world.issue({ type: 'castQ', unitId: me.id, target: { x: 900, y: 800 } });
-    expect(me.mana).toBe(MARKSMAN.maxMana - MARKSMAN.q.manaCost);
+    world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: { x: 900, y: 800 } });
+    expect(me.mana).toBe(MARKSMAN.maxMana - Q.manaCost);
     run(world, 1);
-    world.issue({ type: 'castQ', unitId: me.id, target: { x: 900, y: 800 } });
+    world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: { x: 900, y: 800 } });
     expect(me.cast).toBeNull();
-    expect(me.qCooldown).toBeGreaterThan(2);
+    expect(me.cooldowns.Q).toBeGreaterThan(2);
+  });
+
+  it('ignores slots the champion has no ability in', () => {
+    const { world, me } = setup();
+    world.issue({ type: 'cast', unitId: me.id, slot: 'R', target: { x: 900, y: 800 } });
+    expect(me.cast).toBeNull();
+    expect(me.mana).toBe(MARKSMAN.maxMana);
   });
 });

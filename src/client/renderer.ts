@@ -1,7 +1,7 @@
 import { Container, Graphics, Text } from 'pixi.js';
 import { WORLD_SIZE } from '../sim/defs';
-import { add, angleOf, lerpVec, normalize, scale, sub, type Vec } from '../sim/math';
-import type { SimEvent, Unit, World } from '../sim/world';
+import { add, angleOf, normalize, scale, sub, type Vec } from '../sim/math';
+import type { GameView, Projectile, SimEvent, Unit } from '../sim/world';
 import { TILT, type Camera } from './camera';
 import type { Controls, MarkerKind } from './controls';
 import { COLORS, FONT, teamColor, teamLight } from './theme';
@@ -31,7 +31,9 @@ interface FloatingText {
   age: number;
 }
 
+/** Where to draw things this frame: offline these interpolate between ticks, online between snapshots. */
 export type RenderPos = (u: Unit) => Vec;
+export type ProjectilePos = (p: Projectile) => Vec;
 
 export class Renderer {
   /** World-space layer squashed by the camera tilt: floor, rings, indicators. */
@@ -48,7 +50,7 @@ export class Renderer {
 
   constructor(
     stage: Container,
-    private readonly world: World,
+    private readonly world: GameView,
     private readonly camera: Camera,
     private readonly controls: Controls,
     private readonly playerId: number,
@@ -101,11 +103,11 @@ export class Renderer {
     }
   }
 
-  render(renderPos: RenderPos, alpha: number, dt: number): void {
+  render(renderPos: RenderPos, projectilePos: ProjectilePos, dt: number): void {
     this.camera.applyTo(this.ground);
     this.drawGroundFx(renderPos, dt);
     this.drawUnits(renderPos, dt);
-    this.drawAir(alpha, dt);
+    this.drawAir(projectilePos, dt);
     this.drawFloats(dt);
   }
 
@@ -113,9 +115,8 @@ export class Renderer {
 
   private drawGroundFx(renderPos: RenderPos, dt: number): void {
     const g = this.groundFx.clear();
-    const player = this.world.units.get(this.playerId)!;
-    const playerAlive = this.world.isAlive(player);
-    const pp = renderPos(player);
+    const player = this.world.units.get(this.playerId);
+    const playerAlive = !!player && this.world.isAlive(player);
 
     for (const u of this.world.units.values()) {
       if (!this.world.isAlive(u)) continue;
@@ -124,20 +125,22 @@ export class Renderer {
       g.circle(p.x, p.y, u.def.radius + 6).stroke({ width: hovered ? 6 : 3, color: teamColor(u.team), alpha: 0.9 });
 
       // Telegraph enemy casts so they can be read and dodged.
-      if (u.cast && u.team !== player.team) {
+      const casting = u.cast && u.def.abilities[u.cast.slot];
+      if (u.cast && casting?.kind === 'skillshot' && u.id !== this.playerId) {
         const k = 1 - u.cast.remaining / u.cast.total;
-        drawLane(g, p, u.cast.dir, u.def.q.range, u.def.q.width, COLORS.red, 0.08 + 0.2 * k, 0.5);
+        drawLane(g, p, u.cast.dir, casting.range, casting.width, COLORS.red, 0.08 + 0.2 * k, 0.5);
       }
     }
 
-    if (playerAlive && this.controls.attackMoveArmed) {
-      g.circle(pp.x, pp.y, player.def.attackRange).stroke({ width: 3, color: 0xffffff, alpha: 0.45 });
-    }
-
-    if (playerAlive && this.controls.qHeld) {
+    if (player && playerAlive) {
+      const pp = renderPos(player);
+      if (this.controls.attackMoveArmed) {
+        g.circle(pp.x, pp.y, player.def.attackRange).stroke({ width: 3, color: 0xffffff, alpha: 0.45 });
+      }
+      const aimed = this.controls.aiming && player.def.abilities[this.controls.aiming];
       const dir = normalize(sub(this.controls.mouseWorld, pp));
-      if (dir.x !== 0 || dir.y !== 0) {
-        drawLane(g, pp, dir, player.def.q.range, player.def.q.width, 0x5fb8ff, 0.22, 0.9);
+      if (aimed?.kind === 'skillshot' && (dir.x !== 0 || dir.y !== 0)) {
+        drawLane(g, pp, dir, aimed.range, aimed.width, 0x5fb8ff, 0.22, 0.9);
       }
     }
 
@@ -158,6 +161,11 @@ export class Renderer {
   // --- units --------------------------------------------------------------
 
   private drawUnits(renderPos: RenderPos, dt: number): void {
+    for (const [id, view] of this.views) {
+      if (this.world.units.has(id)) continue;
+      view.root.destroy({ children: true });
+      this.views.delete(id);
+    }
     for (const u of this.world.units.values()) {
       let view = this.views.get(u.id);
       if (!view) {
@@ -175,13 +183,13 @@ export class Renderer {
 
   // --- missiles and hit sparks (screen space, lifted off the floor) --------
 
-  private drawAir(alpha: number, dt: number): void {
+  private drawAir(projectilePos: ProjectilePos, dt: number): void {
     const g = this.air.clear();
     const z = this.camera.zoom;
     const lift = MISSILE_HEIGHT * z;
 
     for (const p of this.world.projectiles) {
-      const s = this.camera.worldToScreen(lerpVec(p.prev, p.pos, alpha));
+      const s = this.camera.worldToScreen(projectilePos(p));
       s.y -= lift;
       const color = teamColor(p.team);
       const light = teamLight(p.team);
@@ -290,7 +298,7 @@ class UnitView {
     drawBody(this.flashBody, r, 0xffffff, 0xffffff);
     this.flashBody.alpha = 0;
     const name = new Text({
-      text: isPlayer ? 'You' : 'Bot',
+      text: isPlayer ? 'You' : 'Enemy',
       style: { fontFamily: FONT, fontSize: 14, fontWeight: 'bold', fill: COLORS.text, stroke: { color: 0x000000, width: 3 } },
     });
     name.anchor.set(0.5, 1);

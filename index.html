@@ -7,10 +7,30 @@
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1a12; user-select: none; }
       #app canvas { display: block; }
+      #menu {
+        position: fixed; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center;
+        font-family: Inter, "Segoe UI", system-ui, sans-serif; color: #f4f1e8;
+      }
+      #menu h1 { margin: 0 0 8px; font-size: 44px; letter-spacing: 0.04em; color: #c8aa6e; }
+      #menu button {
+        min-width: 280px; padding: 14px 20px; font: inherit; font-size: 16px; font-weight: 600; cursor: pointer;
+        color: #f4f1e8; background: #12251a; border: 2px solid #c8aa6e; border-radius: 10px;
+      }
+      #menu button:hover:not(:disabled) { background: #1c3a28; }
+      #menu button:disabled { opacity: 0.5; cursor: default; }
+      #menu small { display: block; margin-top: 4px; font-weight: 400; color: #9aa7a0; font-size: 13px; }
+      #menu-error { min-height: 1.4em; color: #ff8a8a; font-size: 14px; }
     </style>
   </head>
   <body>
     <div id="app"></div>
+    <div id="menu">
+      <h1>1v1me</h1>
+      <button data-mode="duel">Find a duel<small>Online 1v1 — open two tabs to test</small></button>
+      <button data-mode="practice">Online practice<small>You vs the bot, on the server</small></button>
+      <button data-mode="offline">Offline practice<small>No server needed</small></button>
+      <div id="menu-error"></div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

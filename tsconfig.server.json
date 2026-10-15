@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // DOM only because the integration test drives the browser OnlineSession from Node.
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"]
+  },
+  "include": ["server", "src/sim", "src/net", "src/vite-env.d.ts"]
+}

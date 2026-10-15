@@ -39,8 +39,9 @@ export class StrafeBot {
     const d = len(toFoe);
     const dir = normalize(toFoe);
 
-    if (this.qIn <= 0 && d <= me.def.q.range && me.qCooldown <= 0 && !me.cast) {
-      this.world.issue({ type: 'castQ', unitId: me.id, target: foe.pos });
+    const q = me.def.abilities.Q;
+    if (q && this.qIn <= 0 && d <= q.range && me.cooldowns.Q <= 0 && !me.cast) {
+      this.world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: foe.pos });
       this.qIn = 2.5 + this.rng() * 2.5;
     }
 

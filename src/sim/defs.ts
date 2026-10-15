@@ -3,7 +3,11 @@ export const TICK_RATE = 30;
 export const WORLD_SIZE = { width: 2600, height: 1600 };
 export const RESPAWN_SECONDS = 3;
 
-export interface SkillshotDef {
+export const ABILITY_SLOTS = ['Q', 'W', 'E', 'R'] as const;
+export type AbilitySlot = (typeof ABILITY_SLOTS)[number];
+
+export interface SkillshotAbility {
+  kind: 'skillshot';
   name: string;
   cooldown: number;
   manaCost: number;
@@ -16,7 +20,11 @@ export interface SkillshotDef {
   damage: number;
 }
 
+/** Every ability kind. New kinds (dash, shield, ...) get added to this union. */
+export type AbilityDef = SkillshotAbility;
+
 export interface ChampionDef {
+  id: string;
   name: string;
   radius: number;
   moveSpeed: number;
@@ -35,10 +43,11 @@ export interface ChampionDef {
   attackDamage: number;
   /** 0 = melee (instant hit when the windup completes). */
   attackProjectileSpeed: number;
-  q: SkillshotDef;
+  abilities: Partial<Record<AbilitySlot, AbilityDef>>;
 }
 
 export const MARKSMAN: ChampionDef = {
+  id: 'marksman',
   name: 'Marksman',
   radius: 35,
   moveSpeed: 330,
@@ -52,14 +61,21 @@ export const MARKSMAN: ChampionDef = {
   windupPct: 0.2,
   attackDamage: 60,
   attackProjectileSpeed: 2000,
-  q: {
-    name: 'Piercing Arrow',
-    cooldown: 4,
-    manaCost: 40,
-    castTime: 0.25,
-    range: 1100,
-    speed: 1700,
-    width: 60,
-    damage: 90,
+  abilities: {
+    Q: {
+      kind: 'skillshot',
+      name: 'Piercing Arrow',
+      cooldown: 4,
+      manaCost: 40,
+      castTime: 0.25,
+      range: 1100,
+      speed: 1700,
+      width: 60,
+      damage: 90,
+    },
   },
+};
+
+export const CHAMPIONS: Record<string, ChampionDef> = {
+  [MARKSMAN.id]: MARKSMAN,
 };
