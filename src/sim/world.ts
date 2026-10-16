@@ -1,5 +1,8 @@
 import {
   ABILITY_SLOTS,
+  CHAMPION_BOUNTY,
+  FOUNTAIN_RADIUS,
+  FOUNTAIN_REGEN,
   RESPAWN_SECONDS,
   TICK_RATE,
   WORLD_SIZE,
@@ -11,6 +14,7 @@ import {
   type DeathMarkAbility,
   type MarkEffect,
   type SkillshotAbility,
+  type UnitKind,
 } from './defs';
 import {
   add,
@@ -147,7 +151,7 @@ export interface GameView {
 
 export type SimEvent =
   | { type: 'damage'; targetId: number; sourceId: number; amount: number; source: HitSource; detonation: boolean; pos: Vec }
-  | { type: 'death'; unitId: number; killerId: number }
+  | { type: 'death'; unitId: number; killerId: number; kind: UnitKind; pos: Vec; bounty: number }
   | { type: 'respawn'; unitId: number }
   | { type: 'attackStart'; unitId: number }
   | { type: 'attackFired'; unitId: number; targetId: number }
@@ -185,6 +189,8 @@ const TARGET_PICK_RADIUS = 250;
 const DEATH_MARK_FIZZLE_COOLDOWN = 0.5;
 const WORLD_MARGIN = 40;
 const CAST_TRACKING_SECONDS = 5;
+/** How long a hit counts as a call for help to the victim's minions and turret (see lane.ts). */
+const CALL_SECONDS = 0.5;
 
 const IDLE: Order = { kind: 'idle' };
 
@@ -215,6 +221,19 @@ export function isUntargetable(u: Unit): boolean {
   return u.statuses.some((s) => s.kind === 'untargetable');
 }
 
+export const kindOf = (u: Unit): UnitKind => u.def.kind ?? 'champion';
+export const isChampion = (u: Unit): boolean => kindOf(u) === 'champion';
+export const isMinion = (u: Unit): boolean => kindOf(u) === 'minion';
+/** Structures (turrets) only take damage from basic attacks, as in LoL. */
+export const isStructure = (u: Unit): boolean => kindOf(u) === 'turret';
+
+/** An attack or ability that landed on someone, which their allied minions and turrets respond to. */
+export interface CallForHelp {
+  attackerId: number;
+  victimId: number;
+  time: number;
+}
+
 /** Hits from one cast by the caster and by its shadows, for the shared-hit refund. */
 interface CastRecord {
   ownerId: number;
@@ -235,9 +254,15 @@ export class World {
   projectiles: Projectile[] = [];
   shadows: Shadow[] = [];
   readonly authoritative: boolean;
+  /** Recent hits, newest last, for minion and turret targeting. Authoritative worlds only. */
+  calls: CallForHelp[] = [];
+  /** Each team's fountain, where its champions heal. Set by the lane; none by default. */
+  fountains: Partial<Record<Team, Vec>> = {};
   private nextId = 1;
   private events: SimEvent[] = [];
   private readonly casts = new Map<number, CastRecord>();
+  /** Turret id → the champion it keeps shooting and how heated its shots are. */
+  private readonly heat = new Map<number, { targetId: number; stacks: number }>();
 
   constructor(options: WorldOptions = {}) {
     this.authoritative = options.authoritative ?? true;
@@ -338,9 +363,17 @@ export class World {
   step(dt: number): void {
     this.time += dt;
     for (const u of this.units.values()) this.stepUnit(u, dt);
+    this.resolveCollisions();
     this.stepShadows(dt);
     this.stepProjectiles(dt);
     for (const [id, record] of this.casts) if (this.time - record.time > CAST_TRACKING_SECONDS) this.casts.delete(id);
+    this.calls = this.calls.filter((c) => this.time - c.time <= CALL_SECONDS);
+    // Minions and turrets don't respawn. Their missiles already in flight still land.
+    for (const u of this.units.values()) {
+      if (u.respawnIn !== Infinity) continue;
+      this.units.delete(u.id);
+      this.heat.delete(u.id);
+    }
   }
 
   // --- orders -------------------------------------------------------------
@@ -413,7 +446,7 @@ export class World {
     let best: Unit | null = null;
     let bestDist = Infinity;
     for (const other of this.units.values()) {
-      if (other.team === u.team || !this.isTargetable(other)) continue;
+      if (other.team === u.team || !isChampion(other) || !this.isTargetable(other)) continue;
       if (dist(u.pos, other.pos) > ability.range + other.def.radius) continue;
       const d = dist(point, other.pos);
       if (d <= TARGET_PICK_RADIUS + other.def.radius && d < bestDist) {
@@ -433,8 +466,10 @@ export class World {
       return;
     }
 
-    u.hp = Math.min(u.def.maxHp, u.hp + u.def.hpRegen * dt);
-    u.mana = Math.min(u.def.maxMana, u.mana + u.def.manaRegen * dt);
+    const fountain = this.fountains[u.team];
+    const healing = fountain && isChampion(u) && dist(u.pos, fountain) <= FOUNTAIN_RADIUS ? FOUNTAIN_REGEN : 0;
+    u.hp = Math.min(u.def.maxHp, u.hp + (u.def.hpRegen + healing * u.def.maxHp) * dt);
+    u.mana = Math.min(u.def.maxMana, u.mana + (u.def.manaRegen + healing * u.def.maxMana) * dt);
     for (const slot of ABILITY_SLOTS) u.cooldowns[slot] = Math.max(0, u.cooldowns[slot] - dt);
     u.attackCooldown = Math.max(0, u.attackCooldown - dt);
     this.tickStatuses(u, dt);
@@ -534,14 +569,31 @@ export class World {
     const to = sub(target, u.pos);
     const d = len(to);
     if (d < 1e-6) return true;
-    u.facing = turnToward(u.facing, angleOf(to), u.def.turnRate * dt);
     const stepLen = moveSpeedOf(u) * dt;
     if (d <= stepLen) {
+      u.facing = turnToward(u.facing, angleOf(to), u.def.turnRate * dt);
       u.pos = clampToWorld(target);
       return true;
     }
-    u.pos = clampToWorld(add(u.pos, scale(to, stepLen / d)));
+    const dir = this.steerAroundStructures(u, scale(to, 1 / d), stepLen);
+    u.facing = turnToward(u.facing, angleOf(dir), u.def.turnRate * dt);
+    u.pos = clampToWorld(add(u.pos, scale(dir, stepLen)));
     return false;
+  }
+
+  /** Walking into a turret slides along its edge, toward whichever side is closer to where the unit is heading. */
+  private steerAroundStructures(u: Unit, dir: Vec, stepLen: number): Vec {
+    for (const t of this.units.values()) {
+      if (t === u || !isStructure(t) || !this.isAlive(t)) continue;
+      const next = add(u.pos, scale(dir, stepLen));
+      if (dist(next, t.pos) >= u.def.radius + t.def.radius) continue;
+      const out = normalize(sub(u.pos, t.pos));
+      if (dir.x * out.x + dir.y * out.y >= 0) continue; // already heading away
+      const left = { x: -out.y, y: out.x };
+      const side = dir.x * left.x + dir.y * left.y >= 0 ? 1 : -1;
+      dir = scale(left, side);
+    }
+    return dir;
   }
 
   private startWindup(u: Unit, target: Unit): void {
@@ -555,11 +607,30 @@ export class World {
   private fireAttack(u: Unit, target: Unit): void {
     this.events.push({ type: 'attackFired', unitId: u.id, targetId: target.id });
     if (!this.authoritative) return;
+    const damage = this.attackDamage(u, target);
     if (u.def.attackProjectileSpeed <= 0) {
-      this.hit(target, u.id, u.def.attackDamage, 'attack');
+      this.hit(target, u.id, damage, 'attack');
       return;
     }
-    this.fireHoming(u, target, 'attack', u.def.attackProjectileSpeed, u.def.attackDamage);
+    this.fireHoming(u, target, 'attack', u.def.attackProjectileSpeed, damage);
+  }
+
+  /**
+   * LoL's turret rules: shots at minions take a fixed share of their max health, and
+   * consecutive shots at the same champion heat up (+40% each, up to +120%). Switching
+   * targets cools the turret down.
+   */
+  private attackDamage(u: Unit, target: Unit): number {
+    const turret = u.def.turret;
+    if (!turret) return u.def.attackDamage;
+    if (!isChampion(target)) {
+      this.heat.delete(u.id);
+      return target.def.turretDamagePct ? target.def.maxHp * target.def.turretDamagePct : u.def.attackDamage;
+    }
+    const previous = this.heat.get(u.id);
+    const stacks = previous?.targetId === target.id ? previous.stacks : 0;
+    this.heat.set(u.id, { targetId: target.id, stacks: Math.min(turret.maxHeatStacks, stacks + 1) });
+    return u.def.attackDamage * (1 + turret.heatPerShot * stacks);
   }
 
   private fireHoming(u: Unit, target: Unit, source: HitSource, speed: number, damage: number): void {
@@ -668,7 +739,7 @@ export class World {
     let best: Unit | null = null;
     let bestScore = Infinity;
     for (const other of this.units.values()) {
-      if (other.team === u.team || !this.isTargetable(other)) continue;
+      if (other.team === u.team || isStructure(other) || !this.isTargetable(other)) continue;
       const d = dist(u.pos, other.pos) - other.def.radius;
       if (d > ability.bolt.range) continue;
       const marked = other.statuses.some((s) => s.kind === 'mark' && s.sourceId === u.id);
@@ -706,7 +777,7 @@ export class World {
 
     const castId = shadows.length ? this.newCast(u.id) : 0;
     for (const enemy of this.units.values()) {
-      if (enemy.team === u.team || !this.isTargetable(enemy)) continue;
+      if (enemy.team === u.team || isStructure(enemy) || !this.isTargetable(enemy)) continue;
       const reach = ability.radius + enemy.def.radius;
       const byOwn = dist(u.pos, enemy.pos) <= reach;
       const byShadows = shadows.filter((s) => dist(s.pos, enemy.pos) <= reach).length;
@@ -723,7 +794,7 @@ export class World {
         const strength = byShadows + (byOwn ? 1 : 0) >= 2 ? enhancedAmount : amount;
         enemy.statuses.push({ kind: 'slow', amount: strength, remaining: duration });
       }
-      if (byOwn && ability.cooldownRefund) {
+      if (byOwn && ability.cooldownRefund && isChampion(enemy)) {
         const { slot: refundSlot, seconds } = ability.cooldownRefund;
         u.cooldowns[refundSlot] = Math.max(0, u.cooldowns[refundSlot] - seconds);
       }
@@ -825,24 +896,30 @@ export class World {
     const stepLen = Math.min(p.speed * dt, p.range - p.travelled);
     const next = add(p.pos, scale(p.dir, stepLen));
 
+    const ability = this.units.get(p.ownerId)?.def.abilities[p.slot];
+    const championsOnly = ability?.kind === 'skillshot' && !!ability.championsOnly;
+    const minionPct = ability?.kind === 'skillshot' ? (ability.minionDamagePct ?? 1) : 1;
     const hits: { unit: Unit; at: number }[] = [];
     for (const u of this.units.values()) {
       if (u.team === p.team || !this.isTargetable(u) || p.hitIds.includes(u.id)) continue;
+      // Skillshots fly past turrets; some only collide with champions.
+      if (isStructure(u) || (championsOnly && !isChampion(u))) continue;
       const at = segmentCircleHit(p.pos, next, u.pos, u.def.radius + p.width / 2);
       if (at !== null) hits.push({ unit: u, at });
     }
     hits.sort((a, b) => a.at - b.at);
 
     const ctx: HitContext = { castId: p.castId, fromShadow: p.fromShadow };
+    const scaled = (unit: Unit, amount: number) => (isMinion(unit) ? amount * minionPct : amount);
     if (p.stopsAtFirstHit && hits.length) {
       p.pos = lerpVec(p.pos, next, hits[0].at);
-      this.hit(hits[0].unit, p.ownerId, p.damage, p.slot, ctx);
+      this.hit(hits[0].unit, p.ownerId, scaled(hits[0].unit, p.damage), p.slot, ctx);
       return false;
     }
     for (const { unit } of hits) {
       const amount = p.hitIds.length === 0 ? p.damage : p.subsequentDamage;
       p.hitIds.push(unit.id);
-      this.hit(unit, p.ownerId, amount, p.slot, ctx);
+      this.hit(unit, p.ownerId, scaled(unit, amount), p.slot, ctx);
     }
 
     p.pos = next;
@@ -859,11 +936,13 @@ export class World {
   /** Resolves one landed attack or ability: damage, passives, marks, then on-hit effects. */
   private hit(target: Unit, sourceId: number, amount: number, source: HitSource, ctx: HitContext = {}): void {
     if (!this.isTargetable(target)) return;
+    if (source !== 'attack' && isStructure(target)) return;
     const attacker = this.units.get(sourceId);
     const ability = attacker && source !== 'attack' ? attacker.def.abilities[source] : undefined;
     const appliesMark = ability?.kind === 'skillshot' ? ability.onHit?.mark : undefined;
+    this.calls.push({ attackerId: sourceId, victimId: target.id, time: this.time });
 
-    if (source === 'attack' && attacker) this.applyExecutePassive(attacker, target);
+    if (source === 'attack' && attacker && !isStructure(target)) this.applyExecutePassive(attacker, target);
     if (amount > 0) this.damage(target, sourceId, amount, source, false);
     if (ctx.castId) this.recordCastHit(ctx.castId, target.id, !!ctx.fromShadow);
 
@@ -936,13 +1015,53 @@ export class World {
     target.hp = Math.max(0, target.hp - amount);
     this.events.push({ type: 'damage', targetId: target.id, sourceId, amount, source, detonation, pos: { ...target.pos } });
     if (target.hp > 0) return;
-    target.respawnIn = RESPAWN_SECONDS;
+    const kind = kindOf(target);
+    // Champions respawn at their fountain; everything else is removed at the end of the step.
+    target.respawnIn = kind === 'champion' ? RESPAWN_SECONDS : Infinity;
     target.order = IDLE;
     target.windup = null;
     target.cast = null;
     target.dash = null;
     target.statuses = [];
     this.shadows = this.shadows.filter((s) => s.ownerId !== target.id);
-    this.events.push({ type: 'death', unitId: target.id, killerId: sourceId });
+    const bounty = target.def.bounty ?? (kind === 'champion' ? CHAMPION_BOUNTY : 0);
+    this.events.push({ type: 'death', unitId: target.id, killerId: sourceId, kind, pos: { ...target.pos }, bounty });
+  }
+
+  // --- collisions -----------------------------------------------------------
+
+  /**
+   * Nothing walks through a turret. Minions also keep apart from each other and step
+   * around champions, so a wave spreads out instead of stacking. Champions pass through
+   * minions here (LoL's unit collision and pathing around minions aren't modeled).
+   */
+  private resolveCollisions(): void {
+    const alive = [...this.units.values()].filter((u) => this.isAlive(u));
+    const turrets = alive.filter(isStructure);
+    const pushOut = (u: Unit, from: Vec, minDist: number, share: number) => {
+      const away = sub(u.pos, from);
+      const d = len(away);
+      if (d >= minDist) return;
+      const dir = d > 1e-6 ? scale(away, 1 / d) : fromAngle(u.id); // any stable direction
+      u.pos = clampToWorld(add(u.pos, scale(dir, (minDist - d) * share)));
+    };
+    for (const u of alive) {
+      if (u.def.moveSpeed <= 0 || u.dash) continue;
+      for (const t of turrets) pushOut(u, t.pos, u.def.radius + t.def.radius, 1);
+    }
+    // Only the server moves minions; to the prediction they are scenery.
+    if (!this.authoritative) return;
+    const minions = alive.filter(isMinion);
+    for (let i = 0; i < minions.length; i++) {
+      const m = minions[i];
+      for (let j = i + 1; j < minions.length; j++) {
+        const o = minions[j];
+        const minDist = (m.def.radius + o.def.radius) * 0.8;
+        const before = { ...m.pos };
+        pushOut(m, o.pos, minDist, 0.5);
+        pushOut(o, before, minDist, 0.5);
+      }
+      for (const c of alive) if (isChampion(c)) pushOut(m, c.pos, (m.def.radius + c.def.radius) * 0.8, 0.5);
+    }
   }
 }

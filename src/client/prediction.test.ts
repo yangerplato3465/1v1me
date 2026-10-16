@@ -12,10 +12,17 @@ const STEP = 1 / TICK_RATE;
  * A server and one predicting client joined by a fake network. Each direction delays
  * messages by `latency(tick)` ticks; JSON round-tripping stands in for serialization.
  */
-function harness(latency: (tick: number) => number, champ?: string) {
-  const server = new Authority();
+function harness(latency: (tick: number) => number, champ?: string, lane = false) {
+  const server = new Authority({ lane });
   const { unitId } = server.join('me', false, champ);
   const dummy = server.join('dummy');
+  if (!lane) {
+    // Face each other 1200 apart instead of across the whole lane.
+    const me = server.world.units.get(unitId)!;
+    const foe = server.world.units.get(dummy.unitId)!;
+    foe.spawn = { x: me.spawn.x + 1200, y: me.spawn.y };
+    foe.pos = { ...foe.spawn };
+  }
   const predictor = new Predictor(unitId, TICK_RATE);
   let now = 0;
   const toServer: { at: number; msg: CommandMessage }[] = [];
@@ -135,6 +142,25 @@ describe('Predictor', () => {
     expect(h.server.world.units.get(h.predictor.unit()!.id)!.cooldowns.R).toBeGreaterThan(0); // R really fired
     expect(Math.max(...h.corrections)).toBeLessThan(1e-6);
     expect(dist(h.predicted(), h.authoritative())).toBeLessThan(1e-6);
+  });
+
+  it('predicts walking around your own turret exactly, with minions marching past', () => {
+    const h = harness(() => 4, undefined, true);
+    h.run(TICK_RATE * 2);
+    const start = h.predicted();
+    const turret = [...h.server.world.units.values()].find((u) => u.def.kind === 'turret' && u.team === 'blue')!;
+    h.corrections.length = 0;
+
+    // Straight through the turret: he has to slide around it.
+    h.issue({ type: 'move', target: { x: turret.pos.x + 600, y: turret.pos.y } });
+    h.run(TICK_RATE * 9); // the first wave spawns on the way
+
+    const end = h.authoritative();
+    expect(end.x).toBeCloseTo(turret.pos.x + 600, 6);
+    expect(end.y).toBeCloseTo(start.y, 6);
+    expect([...h.server.world.units.values()].some((u) => u.def.kind === 'minion')).toBe(true);
+    expect(Math.max(...h.corrections)).toBeLessThan(1e-6);
+    expect(dist(h.predicted(), end)).toBeLessThan(1e-6);
   });
 });
 

@@ -3,7 +3,7 @@ import type { Vec } from '../sim/math';
 import type { GameView, PlayerCommand, Unit } from '../sim/world';
 import type { Camera } from './camera';
 import { castModeFor, type Settings } from './settings';
-import { bodyRadius } from './theme';
+import { bodyHeight, bodyRadius } from './theme';
 
 export type MarkerKind = 'move' | 'attack';
 
@@ -72,6 +72,9 @@ export class Controls {
   }
 
   private onMouseDown(e: MouseEvent): void {
+    // A click can arrive without a mousemove first (e.g. right after switching windows).
+    this.mouse = { x: e.clientX, y: e.clientY };
+    this.mouseInWindow = true;
     if (e.button === 2) {
       // Right-click while aiming cancels the spell instead of moving.
       if (this.aiming) {
@@ -174,8 +177,9 @@ export class Controls {
       const s = this.camera.worldToScreen(u.pos);
       const r = bodyRadius(u.def) * this.camera.zoom;
       const dx = Math.abs(this.mouse.x - s.x);
-      if (dx > r * 1.1 || this.mouse.y < s.y - r * 3 || this.mouse.y > s.y + r * 0.6) continue;
-      const d = dx + Math.abs(this.mouse.y - (s.y - r * 1.2));
+      const h = bodyHeight(u.def);
+      if (dx > r * 1.1 || this.mouse.y < s.y - r * h || this.mouse.y > s.y + r * 0.6) continue;
+      const d = dx + Math.abs(this.mouse.y - (s.y - r * h * 0.4));
       if (d < bestDist) {
         best = u;
         bestDist = d;

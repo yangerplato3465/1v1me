@@ -7,7 +7,7 @@ import { OnlineSession, defaultServerUrl } from './client/online';
 import { Renderer } from './client/renderer';
 import type { Session } from './client/session';
 import { CAST_MODES, castModeFor, loadSettings, saveSettings, type CastMode, type Settings } from './client/settings';
-import { ABILITY_SLOTS, PLAYABLE, WORLD_SIZE } from './sim/defs';
+import { ABILITY_SLOTS, LANE_Y, PLAYABLE, WORLD_SIZE } from './sim/defs';
 
 type Mode = 'offline' | 'practice' | 'duel';
 
@@ -55,7 +55,7 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
   });
   document.getElementById('app')!.appendChild(app.canvas);
 
-  const camera = new Camera({ x: WORLD_SIZE.width / 2, y: WORLD_SIZE.height / 2 });
+  const camera = new Camera(session.view.units.get(session.playerId)?.pos ?? { x: WORLD_SIZE.width / 2, y: LANE_Y });
   const controls = new Controls(
     app.canvas,
     session.view,
@@ -72,6 +72,9 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
 
   let kills = 0;
   let deaths = 0;
+  /** Minions you last-hit, and gold from every kill you landed. */
+  let cs = 0;
+  let gold = 0;
 
   app.ticker.add((ticker) => {
     const dt = Math.min(ticker.deltaMS / 1000, 0.25);
@@ -81,7 +84,11 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
     for (const ev of session.update(dt)) {
       if (ev.type === 'death') {
         if (ev.unitId === session.playerId) deaths++;
-        else kills++;
+        else if (ev.kind === 'champion' && ev.killerId === session.playerId) kills++;
+        if (ev.killerId === session.playerId) {
+          gold += ev.bounty;
+          if (ev.kind === 'minion') cs++;
+        }
       }
       renderer.handleEvent(ev);
     }
@@ -102,6 +109,8 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
         tickRate: session.tickRate,
         kills,
         deaths,
+        cs,
+        gold,
         cameraLocked: camera.locked,
         aiming: controls.aiming,
         status: session.status(),

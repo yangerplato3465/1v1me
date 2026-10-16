@@ -1,6 +1,6 @@
 import { ABILITY_SLOTS, type AbilityDef, type AbilitySlot } from './defs';
 import { add, clamp, dist, len, lerpVec, normalize, scale, sub, type Vec } from './math';
-import type { PlayerCommand, Unit, World } from './world';
+import { isMinion, isStructure, type PlayerCommand, type Unit, type World } from './world';
 
 export interface BotOptions {
   /** Seconds before it reacts to a skillshot it can see coming (from the start of the cast). */
@@ -20,11 +20,16 @@ const THINK_SECONDS = 0.12;
 const MELEE_RANGE = 300;
 /** Extra clearance it aims for when sidestepping a missile. */
 const DODGE_MARGIN = 35;
+/** How far outside enemy turret range it keeps when it has to stay out. */
+const TURRET_MARGIN = 120;
+/** How far behind its frontmost minion it waits for the wave. */
+const WAVE_SPACING = 300;
 
 /**
  * Practice opponent that plays any champion through the same commands a player uses:
  * auto-attacks (orb-walking when ranged), casts its abilities by kind, and sidesteps
- * skillshots after a reaction delay, but not always, so it stays beatable.
+ * skillshots after a reaction delay, but not always, so it stays beatable. On a lane it
+ * also farms minions and respects the enemy turret.
  */
 export class PracticeBot {
   private thinkIn = 0;
@@ -57,12 +62,22 @@ export class PracticeBot {
     if (this.thinkIn > 0) return;
     this.thinkIn = THINK_SECONDS * (0.7 + this.rng() * 0.6);
 
+    const laning = !!this.world.fountains[me.team];
     if (!this.world.isAlive(foe)) {
-      if (dist(me.pos, me.spawn) > 50) this.issue({ type: 'move', target: me.spawn });
+      if (laning) this.farm(me);
+      else if (dist(me.pos, me.spawn) > 50) this.issue({ type: 'move', target: me.spawn });
       return;
     }
     if (this.dodge(me)) return;
-    if (this.useAbility(me, foe)) return;
+    if (laning && this.avoidTurret(me)) return;
+    const turret = this.enemyTurret(me);
+    // A foe under its own turret is only worth poking, not diving.
+    const foeSafe = !!turret && this.inTurretRange(turret, foe.pos, foe.def.radius);
+    if (this.useAbility(me, foe, foeSafe)) return;
+    if (laning && !this.shouldFight(me, foe, foeSafe)) {
+      this.farm(me);
+      return;
+    }
     this.fight(me, foe);
   }
 
@@ -159,7 +174,7 @@ export class PracticeBot {
   }
 
   /** Casts at most one ability per decision. Returns true if it did. */
-  private useAbility(me: Unit, foe: Unit): boolean {
+  private useAbility(me: Unit, foe: Unit, foeSafe = false): boolean {
     const d = dist(me.pos, foe.pos);
     const myHp = me.hp / me.def.maxHp;
     const foeHp = foe.hp / foe.def.maxHp;
@@ -206,7 +221,7 @@ export class PracticeBot {
           }
           const reach = ability.range + me.def.attackRange + me.def.radius + foe.def.radius;
           const finish = (ability.bolt?.damage ?? 0) + me.def.attackDamage;
-          if (targetable && foe.hp <= finish && d <= reach && myHp > 0.4) {
+          if (targetable && !foeSafe && foe.hp <= finish && d <= reach && myHp > 0.4) {
             this.issue({ type: 'cast', slot, target: foe.pos });
             return true;
           }
@@ -215,7 +230,7 @@ export class PracticeBot {
         case 'shadow': {
           // Send the shadow in to set up its copies when the follow-up is ready.
           const followUp = me.def.shadowMimics?.some((s) => s !== slot && me.cooldowns[s] <= 0);
-          if (!targetable || !followUp || d > ability.range + 600) break;
+          if (!targetable || foeSafe || !followUp || d > ability.range + 600) break;
           const toward = normalize(sub(foe.pos, me.pos));
           this.issue({ type: 'cast', slot, target: add(me.pos, scale(toward, Math.min(ability.range, Math.max(0, d - 150)))) });
           return true;
@@ -231,7 +246,7 @@ export class PracticeBot {
         }
         case 'deathMark': {
           const comboReady = me.cooldowns.Q <= 0 || me.cooldowns.E <= 0;
-          if (targetable && d <= ability.range + foe.def.radius && (foeHp < 0.7 || comboReady) && myHp > 0.25) {
+          if (targetable && !foeSafe && d <= ability.range + foe.def.radius && (foeHp < 0.7 || comboReady) && myHp > 0.25) {
             this.issue({ type: 'cast', slot, target: foe.pos });
             return true;
           }
@@ -271,7 +286,83 @@ export class PracticeBot {
       const perp = { x: -away.y, y: away.x };
       const radial = clamp(reach * 0.9 - d, -250, 250); // drift toward ~90% of attack reach
       const step = add(scale(perp, this.strafeSide * 120), scale(away, radial));
-      this.issue({ type: 'move', target: add(me.pos, step) });
+      this.issue({ type: 'move', target: this.outsideTurret(me, add(me.pos, step)) });
     }
+  }
+
+  // --- laning: turrets and minions -----------------------------------------------
+
+  private enemyTurret(me: Unit): Unit | null {
+    let best: Unit | null = null;
+    for (const u of this.world.units.values()) {
+      if (u.team === me.team || !isStructure(u) || !this.world.isAlive(u)) continue;
+      if (!best || dist(me.pos, u.pos) < dist(me.pos, best.pos)) best = u;
+    }
+    return best;
+  }
+
+  /** Whether a unit of radius `radius` at `pos` is inside the turret's attack range. */
+  private inTurretRange(turret: Unit, pos: Vec, radius: number, margin = 0): boolean {
+    return dist(turret.pos, pos) <= turret.def.attackRange + turret.def.radius + radius + margin;
+  }
+
+  /** Moves a point it wants to walk to back out of enemy turret range. */
+  private outsideTurret(me: Unit, p: Vec): Vec {
+    const turret = this.enemyTurret(me);
+    if (!turret || !this.inTurretRange(turret, p, me.def.radius, TURRET_MARGIN)) return p;
+    const side = me.team === 'blue' ? -1 : 1;
+    const edge = turret.def.attackRange + turret.def.radius + me.def.radius + TURRET_MARGIN;
+    return { x: turret.pos.x + side * edge, y: p.y };
+  }
+
+  /** Steps out of enemy turret range when the turret is shooting it, or has none of its minions to shoot instead. */
+  private avoidTurret(me: Unit): boolean {
+    const turret = this.enemyTurret(me);
+    if (!turret || !this.inTurretRange(turret, me.pos, me.def.radius, 40)) return false;
+    const onMe = turret.order.kind === 'attack' && turret.order.targetId === me.id;
+    const tanks = [...this.world.units.values()].some(
+      (u) => u.team === me.team && isMinion(u) && this.world.isAlive(u) && this.inTurretRange(turret, u.pos, u.def.radius),
+    );
+    if (!onMe && tanks) return false;
+    this.issue({ type: 'move', target: this.outsideTurret(me, me.pos) });
+    return true;
+  }
+
+  /** Trades when the foe is close and not hiding under its turret; otherwise farms. */
+  private shouldFight(me: Unit, foe: Unit, foeSafe: boolean): boolean {
+    if (foeSafe || !this.world.isTargetable(foe)) return false;
+    const reach = me.def.attackRange + me.def.radius + foe.def.radius;
+    const chase = foe.hp / foe.def.maxHp < 0.3 ? 600 : 250;
+    return dist(me.pos, foe.pos) <= reach + chase;
+  }
+
+  /** Last-hits minions it can kill in one attack, otherwise pushes the lowest one in reach, otherwise follows its wave. */
+  private farm(me: Unit): void {
+    if (me.windup) return;
+    const reach = (u: Unit) => me.def.attackRange + me.def.radius + u.def.radius;
+    const minions = [...this.world.units.values()]
+      .filter((u) => u.team !== me.team && isMinion(u) && this.world.isTargetable(u))
+      .sort((a, b) => a.hp - b.hp);
+    const target =
+      minions.find((m) => m.hp <= me.def.attackDamage && dist(me.pos, m.pos) <= reach(m) + 200) ??
+      minions.find((m) => dist(me.pos, m.pos) <= reach(m));
+    if (target) {
+      if (me.order.kind !== 'attack' || me.order.targetId !== target.id) this.issue({ type: 'attack', targetId: target.id });
+      return;
+    }
+
+    // Wait just behind its own wave, or in front of its turret when there is none.
+    const ahead = me.team === 'blue' ? 1 : -1;
+    const allies = [...this.world.units.values()].filter((u) => u.team === me.team && isMinion(u) && this.world.isAlive(u));
+    let spot: Vec;
+    if (allies.length) {
+      const front = allies.reduce((a, b) => (b.pos.x * ahead > a.pos.x * ahead ? b : a));
+      spot = { x: front.pos.x - ahead * WAVE_SPACING, y: front.pos.y };
+    } else {
+      const home = [...this.world.units.values()].find((u) => u.team === me.team && isStructure(u));
+      spot = home ? { x: home.pos.x + ahead * 500, y: home.pos.y } : me.spawn;
+    }
+    spot = this.outsideTurret(me, spot);
+    if (dist(me.pos, spot) > 80) this.issue({ type: 'move', target: spot });
   }
 }

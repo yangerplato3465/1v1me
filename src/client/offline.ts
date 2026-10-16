@@ -1,5 +1,6 @@
 import { PracticeBot } from '../sim/bot';
-import { PLAYABLE, TICK_RATE, WAYFINDER, WORLD_SIZE, type ChampionDef } from '../sim/defs';
+import { FOUNTAINS, PLAYABLE, TICK_RATE, WAYFINDER, type ChampionDef } from '../sim/defs';
+import { Lane } from '../sim/lane';
 import { dist, lerpVec, type Vec } from '../sim/math';
 import { World, type PlayerCommand, type Projectile, type Shadow, type SimEvent, type Unit } from '../sim/world';
 import type { Session } from './session';
@@ -15,13 +16,15 @@ export class OfflineSession implements Session {
   readonly tickRate = TICK_RATE;
   readonly note = 'Offline practice: the bot attacks, casts its kit and dodges some of your skillshots.';
   private readonly bot: PracticeBot;
+  private readonly lane: Lane;
   private readonly prev = new Map<number, Vec>();
   private acc = 0;
 
   constructor(champ: ChampionDef = PLAYABLE[0]) {
     const world = new World();
-    const player = world.addUnit(champ, 'blue', { x: 700, y: WORLD_SIZE.height / 2 });
-    const enemy = world.addUnit(WAYFINDER, 'red', { x: WORLD_SIZE.width - 700, y: WORLD_SIZE.height / 2 });
+    this.lane = new Lane(world);
+    const player = world.addUnit(champ, 'blue', FOUNTAINS.blue);
+    const enemy = world.addUnit(WAYFINDER, 'red', FOUNTAINS.red);
     this.view = world;
     this.playerId = player.id;
     this.bot = new PracticeBot(world, enemy.id, player.id);
@@ -37,6 +40,8 @@ export class OfflineSession implements Session {
     this.acc += dt;
     while (this.acc >= STEP) {
       for (const u of this.view.units.values()) this.prev.set(u.id, { ...u.pos });
+      for (const id of this.prev.keys()) if (!this.view.units.has(id)) this.prev.delete(id);
+      this.lane.update(STEP);
       this.bot.update(STEP);
       this.view.step(STEP);
       events.push(...this.view.drainEvents());

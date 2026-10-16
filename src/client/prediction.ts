@@ -134,6 +134,7 @@ export class Predictor {
       const unit = fromUnitSnapshot(structuredClone(snap));
       if (unit.id !== this.playerId) {
         // Other units are scenery here: they must not attack or cast at the prediction.
+        unit.order = { kind: 'idle' };
         unit.windup = null;
         unit.cast = null;
       }

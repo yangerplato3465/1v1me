@@ -1,4 +1,4 @@
-import { ABILITY_SLOTS, CHAMPIONS, type AbilitySlot } from '../sim/defs';
+import { ABILITY_SLOTS, UNIT_DEFS, type AbilitySlot } from '../sim/defs';
 import type { Vec } from '../sim/math';
 import type { Order, PlayerCommand, Projectile, Shadow, SimEvent, Team, Unit } from '../sim/world';
 
@@ -65,6 +65,8 @@ export interface UnitSnapshot {
   cooldowns: Unit['cooldowns'];
   statuses: Unit['statuses'];
   respawnIn: number;
+  /** What a minion or turret is attacking. Champions' orders stay private. */
+  targetId?: number;
 }
 
 export interface Snapshot {
@@ -94,13 +96,14 @@ export function toUnitSnapshot(u: Unit): UnitSnapshot {
     cooldowns: u.cooldowns,
     statuses: u.statuses,
     respawnIn: u.respawnIn,
+    ...(u.def.kind && u.def.kind !== 'champion' && u.order.kind === 'attack' ? { targetId: u.order.targetId } : {}),
   };
 }
 
 /** Rebuilds a Unit on the client. Other players' orders stay server-side, so they read as idle. */
 export function fromUnitSnapshot(s: UnitSnapshot): Unit {
-  const def = CHAMPIONS[s.champ];
-  if (!def) throw new Error(`Unknown champion "${s.champ}"`);
+  const def = UNIT_DEFS[s.champ];
+  if (!def) throw new Error(`Unknown unit "${s.champ}"`);
   return {
     id: s.id,
     team: s.team,
@@ -110,7 +113,7 @@ export function fromUnitSnapshot(s: UnitSnapshot): Unit {
     facing: s.facing,
     hp: s.hp,
     mana: s.mana,
-    order: { kind: 'idle' },
+    order: s.targetId === undefined ? { kind: 'idle' } : { kind: 'attack', targetId: s.targetId },
     attackCooldown: s.attackCooldown,
     windup: s.windup,
     cast: s.cast,

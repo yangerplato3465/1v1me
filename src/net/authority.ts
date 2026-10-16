@@ -1,15 +1,17 @@
 import { PracticeBot } from '../sim/bot';
-import { PLAYABLE, TICK_RATE, WAYFINDER, WORLD_SIZE } from '../sim/defs';
+import { FOUNTAINS, PLAYABLE, TICK_RATE, WAYFINDER } from '../sim/defs';
+import { Lane } from '../sim/lane';
 import { World, type Team } from '../sim/world';
 import { parseCommandMessage, toUnitSnapshot, type Snapshot, type Welcome } from './protocol';
 
-const SPAWNS: Record<Team, { x: number; y: number }> = {
-  blue: { x: 700, y: WORLD_SIZE.height / 2 },
-  red: { x: WORLD_SIZE.width - 700, y: WORLD_SIZE.height / 2 },
-};
+export interface AuthorityOptions {
+  /** Turrets and minion waves (default true). Tests of other systems turn them off. */
+  lane?: boolean;
+}
 
 interface Seat {
   unitId: number;
+  team: Team;
   lastSeq: number;
   lastSeqTick: number;
 }
@@ -20,23 +22,31 @@ interface Seat {
  */
 export class Authority {
   readonly world = new World();
+  readonly lane: Lane | null;
   private readonly seats = new Map<string, Seat>();
   private bot: PracticeBot | null = null;
+  /** Minions start marching once both champions are in. */
+  private started = false;
   /** Last simulated tick. Commands received now are first simulated in tick + 1. */
   private tick = 0;
 
+  constructor(options: AuthorityOptions = {}) {
+    this.lane = options.lane === false ? null : new Lane(this.world);
+  }
+
   join(seatId: string, practice = false, champ?: string): Welcome {
-    const taken = new Set([...this.world.units.values()].map((u) => u.team));
+    const taken = new Set([...this.seats.values()].map((s) => s.team));
     const team: Team = taken.has('blue') ? 'red' : 'blue';
     const def = PLAYABLE.find((c) => c.id === champ) ?? PLAYABLE[0];
-    const unit = this.world.addUnit(def, team, SPAWNS[team]);
-    this.seats.set(seatId, { unitId: unit.id, lastSeq: -1, lastSeqTick: -1 });
+    const unit = this.world.addUnit(def, team, FOUNTAINS[team]);
+    this.seats.set(seatId, { unitId: unit.id, team, lastSeq: -1, lastSeqTick: -1 });
 
     if (practice && !this.bot) {
       const botTeam: Team = team === 'blue' ? 'red' : 'blue';
-      const botUnit = this.world.addUnit(WAYFINDER, botTeam, SPAWNS[botTeam]);
+      const botUnit = this.world.addUnit(WAYFINDER, botTeam, FOUNTAINS[botTeam]);
       this.bot = new PracticeBot(this.world, botUnit.id, unit.id);
     }
+    if (this.bot || this.seats.size >= 2) this.started = true;
     return { unitId: unit.id, tickRate: TICK_RATE };
   }
 
@@ -59,6 +69,7 @@ export class Authority {
   /** Advances one tick and returns the snapshot shared by everyone. */
   step(dt: number): Snapshot {
     this.tick++;
+    if (this.started) this.lane?.update(dt);
     this.bot?.update(dt);
     this.world.step(dt);
     return {

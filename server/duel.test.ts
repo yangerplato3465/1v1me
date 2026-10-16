@@ -2,6 +2,7 @@ import { Client, type Room } from '@colyseus/sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { MSG, ROOM_NAME, type Snapshot, type Welcome } from '../src/net/protocol';
 import { OnlineSession } from '../src/client/online';
+import { CHAMPIONS } from '../src/sim/defs';
 import { createServer } from './app';
 
 const PORT = 2599;
@@ -32,6 +33,8 @@ async function until<T>(read: () => T | null | undefined | false | Promise<T | n
 
 const client = () => new Client(`http://localhost:${PORT}`);
 const unitIn = (s: Snapshot | null, id: number) => s?.units.find((u) => u.id === id);
+/** Champions in a snapshot; the rest are turrets and minions. */
+const champions = (s: Snapshot | null) => s?.units.filter((u) => u.champ in CHAMPIONS) ?? [];
 
 beforeAll(async () => {
   await server.listen(PORT);
@@ -48,8 +51,9 @@ describe('DuelRoom', () => {
     expect(b.room.roomId).toBe(a.room.roomId);
 
     const [wa, wb] = await Promise.all([a.welcome, b.welcome]);
-    const s = await until(() => (a.latest()?.units.length === 2 ? a.latest() : null));
-    expect(new Set(s.units.map((u) => u.team))).toEqual(new Set(['blue', 'red']));
+    const s = await until(() => (champions(a.latest()).length === 2 ? a.latest() : null));
+    expect(new Set(champions(s).map((u) => u.team))).toEqual(new Set(['blue', 'red']));
+    expect(s.units.filter((u) => u.champ === 'turret-outer')).toHaveLength(2);
 
     const startA = unitIn(s, wa.unitId)!.pos;
     const startB = unitIn(s, wb.unitId)!.pos;
@@ -93,8 +97,8 @@ describe('DuelRoom', () => {
   it('runs a server-side bot in practice rooms and keeps them out of matchmaking', async () => {
     const solo = track(await client().create(ROOM_NAME, { practice: true }));
     const { unitId } = await solo.welcome;
-    const s = await until(() => (solo.latest()?.units.length === 2 ? solo.latest() : null));
-    expect(s.units.some((u) => u.id !== unitId)).toBe(true);
+    const s = await until(() => (champions(solo.latest()).length === 2 ? solo.latest() : null));
+    expect(champions(s).some((u) => u.id !== unitId)).toBe(true);
 
     const other = await client().joinOrCreate(ROOM_NAME, {});
     expect(other.roomId).not.toBe(solo.room.roomId);
@@ -110,7 +114,7 @@ describe('DuelRoom', () => {
     const me = () => session.view.units.get(session.playerId);
     await until(async () => {
       await frame();
-      return session.view.units.size === 2 && me();
+      return [...session.view.units.values()].filter((u) => !u.def.kind || u.def.kind === 'champion').length === 2 && me();
     });
     for (let i = 0; i < 10; i++) await frame();
     const start = session.renderPos(me()!);

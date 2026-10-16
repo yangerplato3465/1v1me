@@ -67,6 +67,51 @@ saved in the browser:
   about a round trip after the visual impact.
 - **Not yet:** reconnection and rematches.
 
+## The lane
+
+The map is a single mid lane running from the blue base (left) to the red base (right),
+walled in by jungle, with the river across the middle. Each side has a fountain, one
+outer turret, and minion waves. The rules follow LoL (minute-0 numbers from the LoL wiki):
+
+- **Waves.** Every 30 s, each side spawns 3 melee and 3 caster minions, plus a siege
+  minion every 3rd wave (every 2nd from 15:00, every wave from 25:00). The first wave
+  comes at 0:10 instead of LoL's 1:05, so practice starts quickly. In a duel, waves start
+  once both players are in.
+- **Minions.** Melee 477 HP / 12 AD / 110 range, caster 296 / 24 / 550, siege 912 / 41 /
+  300, all moving at 325. They march along the lane and attack whatever LoL's priority
+  list picks, re-checking every 0.25 s:
+  1. an enemy champion that hit an allied champion
+  2. an enemy minion that hit an allied champion
+  3. an enemy minion that hit an allied minion
+  4. an enemy turret that hit an allied minion
+  5. an enemy champion that hit an allied minion
+  6. the closest enemy minion
+  7. the closest enemy champion
+  8. the closest enemy turret
+
+  A minion keeps its target until the target dies or leaves its 700 range. Only a call
+  from an allied champion (1–2) pulls it off early. So hitting the enemy champion near
+  their minions draws minion aggro.
+- **Turret.** 5000 HP, 152 damage per shot at 0.83 shots/s, with 750 range from its center.
+  It targets with the same priority list (no turrets). Its shots take 45% of a melee
+  minion's max health, 70% of a caster's and 14% of a siege minion's. Consecutive shots at
+  the same champion heat up by 40% each, to +120%. Abilities don't damage turrets (only
+  basic attacks do), and skillshots fly past them. Nobody walks through a turret: units
+  slide around it.
+- **Last hits.** Gold goes to whoever lands the killing blow (21 / 14 / 60 per minion, 300
+  per champion, 250 per turret). The HUD shows your CS and gold. There are no items yet.
+- **Fountain.** Standing in your own fountain heals 10% of max health and mana per second.
+- **Ability rules on the lane.** Wayfinder's Rune Orb passes through minions (it only hits
+  champions) and Skyline Barrage deals 50% to minions, like Ezreal's W and R. Shadeblade's
+  W cooldown refund and his death mark only count champions.
+- **What you see.** Enemy turret range appears as a red ring when you get close, and
+  turns bright while the turret is shooting you. A beam shows what each turret is
+  targeting. Damage numbers only appear for damage you deal or take.
+- **Not modeled yet:** minion and turret stats growing over time, turret plating and
+  fortification, unit collision between champions and minions (champions walk through
+  them), experience and levels, inner turrets, inhibitor and nexus (there's no win
+  condition yet), recall, and the fountain laser.
+
 ## Champion: Wayfinder
 
 The playable champion mirrors **Ezreal's kit** (mechanics and level-1 / rank-1 numbers from
@@ -106,6 +151,10 @@ R dash; slows, the mark, refunds and damage come from the server.
 `src/sim/bot.ts` plays any champion, deciding about 8 times a second through the same
 commands a player sends:
 
+- **Laning.** It last-hits minions it can kill in one attack, otherwise pushes the lowest
+  minion in reach, and otherwise waits behind its wave. It trades when you come close and
+  aren't under your turret. It leaves enemy turret range when the turret targets it or has
+  none of its minions to shoot instead, and it doesn't dive you under your turret.
 - **Auto-attacks.** Ranged, it orb-walks: attacks when its timer is up, repositions to
   about 90% of its range during the backswing, and never cancels its own windup. Melee, it
   chases and swings.
@@ -148,7 +197,8 @@ All numbers are in [`src/sim/defs.ts`](src/sim/defs.ts).
 ```
 src/sim/      pure game rules (no DOM/Pixi), shared by server and client
   world.ts    units, orders, attacks, abilities, projectiles, fixed-step update
-  defs.ts     champions and abilities, tick rate, map size
+  defs.ts     champions, minions, turret and abilities; map layout, wave timing, tick rate
+  lane.ts     turrets, minion waves and LoL's minion/turret targeting rules
   bot.ts      practice bot: plays any champion through normal commands (see below)
 src/net/      wire protocol (messages, snapshots, validation) and the Authority (server game logic)
 src/client/   PixiJS rendering, camera, input, HUD
@@ -162,4 +212,4 @@ server/       Colyseus server and the DuelRoom
 1. Levels and items, so attack speed and damage can reach mid-game values.
 2. Reconnection and a rematch/end-of-game flow (win condition, end screen).
 3. Armor/magic resist and levels or items, then a second champion.
-4. Map with walls and pathfinding, then minions and towers.
+4. A nexus and win condition (or LoL's 1v1 rules: first blood, 100 CS or first turret).

@@ -1,10 +1,21 @@
 import { Container, Graphics, Text } from 'pixi.js';
-import { WORLD_SIZE } from '../sim/defs';
+import { FOUNTAINS, FOUNTAIN_RADIUS, LANE_Y, TURRET_POSITIONS, WORLD_SIZE } from '../sim/defs';
 import { add, angleOf, dist, normalize, scale, sub, type Vec } from '../sim/math';
-import { isUntargetable, type GameView, type Projectile, type Shadow, type SimEvent, type Unit } from '../sim/world';
+import {
+  isChampion,
+  isMinion,
+  isStructure,
+  isUntargetable,
+  type GameView,
+  type Projectile,
+  type Shadow,
+  type SimEvent,
+  type Team,
+  type Unit,
+} from '../sim/world';
 import { TILT, type Camera } from './camera';
 import type { Controls, MarkerKind } from './controls';
-import { COLORS, FONT, bodyRadius, teamColor, teamLight } from './theme';
+import { COLORS, FONT, bodyHeight, bodyRadius, hpColor, teamColor, teamLight } from './theme';
 
 /** How high above the floor missiles fly, in world units. */
 const MISSILE_HEIGHT = 42;
@@ -18,6 +29,8 @@ const DEATH_MARK_COLOR = 0xff2e4d;
 const SLOW_COLOR = 0x7fd3ff;
 const SLASH_SECONDS = 0.3;
 const ULT_COLOR = 0xffd166;
+/** Enemy turret range shows up when you come this close to it. */
+const TURRET_RING_NOTICE = 450;
 
 interface ClickMarker {
   pos: Vec;
@@ -65,7 +78,7 @@ export class Renderer {
   private readonly unitLayer = new Container();
   private readonly air = new Graphics();
   private readonly texts = new Container();
-  private readonly views = new Map<number, UnitView>();
+  private readonly views = new Map<number, View>();
   private markers: ClickMarker[] = [];
   private sparks: Spark[] = [];
   private blinks: BlinkTrail[] = [];
@@ -80,7 +93,7 @@ export class Renderer {
     private readonly controls: Controls,
     private readonly playerId: number,
   ) {
-    this.ground.addChild(drawArena(), this.groundFx);
+    this.ground.addChild(drawMap(), this.groundFx);
     this.unitLayer.sortableChildren = true;
     stage.addChild(this.ground, this.unitLayer, this.air, this.texts);
   }
@@ -96,6 +109,11 @@ export class Renderer {
         if (view) {
           view.flash = 1;
           view.pop = 1;
+        }
+        // Like LoL, only show numbers for damage you deal or take; the minion war stays quiet.
+        if (ev.sourceId !== this.playerId && ev.targetId !== this.playerId) {
+          this.sparks.push({ pos: { ...ev.pos }, color: COLORS.muted, age: SPARK_SECONDS * 0.4 });
+          break;
         }
         const color = ev.detonation
           ? MARK_COLOR
@@ -160,11 +178,11 @@ export class Renderer {
       case 'skillshotExpired':
         this.sparks.push({ pos: ev.pos, color: COLORS.muted, age: 0 });
         break;
-      case 'death': {
-        const u = this.world.units.get(ev.unitId);
-        if (u) this.float(ev.unitId === this.playerId ? 'SLAIN' : 'KILL', u.pos, COLORS.gold, 40);
+      case 'death':
+        if (ev.kind === 'champion') this.float(ev.unitId === this.playerId ? 'SLAIN' : 'KILL', ev.pos, COLORS.gold, 40);
+        else if (ev.kind === 'turret') this.float('TURRET DESTROYED', ev.pos, COLORS.gold, 34);
+        if (ev.killerId === this.playerId && ev.kind !== 'champion') this.float(`+${ev.bounty}g`, ev.pos, COLORS.gold, 20);
         break;
-      }
       default:
         break;
     }
@@ -175,7 +193,7 @@ export class Renderer {
     this.drawGroundFx(renderPos, shadowPos, dt);
     this.drawUnits(renderPos, dt);
     this.drawShadows(shadowPos);
-    this.drawAir(projectilePos, dt);
+    this.drawAir(renderPos, projectilePos, dt);
     this.drawFloats(dt);
   }
 
@@ -186,11 +204,26 @@ export class Renderer {
     const player = this.world.units.get(this.playerId);
     const playerAlive = !!player && this.world.isAlive(player);
 
+    // Enemy turret range, once you get close, brighter when it is shooting you.
+    if (player && playerAlive) {
+      const pp = renderPos(player);
+      for (const t of this.world.units.values()) {
+        if (!isStructure(t) || t.team === player.team || !this.world.isAlive(t)) continue;
+        const reach = t.def.attackRange + t.def.radius + player.def.radius;
+        const gap = dist(pp, t.pos) - reach;
+        if (gap > TURRET_RING_NOTICE) continue;
+        const onMe = t.order.kind === 'attack' && t.order.targetId === player.id;
+        const alpha = onMe ? 0.9 : 0.25 + 0.45 * Math.min(1, 1 - gap / TURRET_RING_NOTICE);
+        g.circle(t.pos.x, t.pos.y, reach).stroke({ width: onMe ? 6 : 4, color: COLORS.red, alpha });
+      }
+    }
+
     for (const u of this.world.units.values()) {
       if (!this.world.isAlive(u)) continue;
       const p = renderPos(u);
       const hovered = this.controls.hoverId === u.id;
-      g.circle(p.x, p.y, u.def.radius + 6).stroke({ width: hovered ? 6 : 3, color: teamColor(u.team), alpha: 0.9 });
+      const ring = isChampion(u) || hovered;
+      if (ring) g.circle(p.x, p.y, u.def.radius + 6).stroke({ width: hovered ? 6 : 3, color: teamColor(u.team), alpha: 0.9 });
       const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 120);
       if (u.statuses.some((st) => st.kind === 'mark')) {
         g.circle(p.x, p.y, u.def.radius + 16 + pulse * 4).stroke({ width: 4, color: MARK_COLOR, alpha: 0.6 + 0.4 * pulse });
@@ -309,7 +342,8 @@ export class Renderer {
     for (const u of this.world.units.values()) {
       let view = this.views.get(u.id);
       if (!view) {
-        view = new UnitView(u, u.id === this.playerId);
+        const allied = u.team === (this.world.units.get(this.playerId)?.team ?? 'blue');
+        view = isStructure(u) ? new TurretView(u, allied) : isMinion(u) ? new MinionView(u, allied) : new UnitView(u, u.id === this.playerId);
         this.views.set(u.id, view);
         this.unitLayer.addChild(view.root);
       }
@@ -349,16 +383,43 @@ export class Renderer {
 
   // --- missiles and hit sparks (screen space, lifted off the floor) --------
 
-  private drawAir(projectilePos: ProjectilePos, dt: number): void {
+  private drawAir(renderPos: RenderPos, projectilePos: ProjectilePos, dt: number): void {
     const g = this.air.clear();
     const z = this.camera.zoom;
     const lift = MISSILE_HEIGHT * z;
+
+    // Turret aggro: a beam from the crystal to whatever it is shooting, red when it's you.
+    for (const t of this.world.units.values()) {
+      if (!isStructure(t) || t.order.kind !== 'attack' || !this.world.isAlive(t)) continue;
+      const target = this.world.units.get(t.order.targetId);
+      if (!target || !this.world.isAlive(target)) continue;
+      const from = this.camera.worldToScreen(t.pos);
+      from.y -= bodyRadius(t.def) * bodyHeight(t.def) * z;
+      const to = this.camera.worldToScreen(renderPos(target));
+      to.y -= bodyRadius(target.def) * z;
+      const onMe = target.id === this.playerId;
+      g.moveTo(from.x, from.y)
+        .lineTo(to.x, to.y)
+        .stroke({ width: (onMe ? 4 : 2) * z, color: onMe ? COLORS.red : teamLight(t.team), alpha: onMe ? 0.85 : 0.35 });
+    }
 
     for (const p of this.world.projectiles) {
       const s = this.camera.worldToScreen(projectilePos(p));
       s.y -= lift;
       const color = teamColor(p.team);
       const light = teamLight(p.team);
+      const owner = this.world.units.get(p.ownerId);
+      if (p.kind === 'homing' && owner && isStructure(owner)) {
+        s.y -= 60 * z; // fired from high up on the tower
+        g.circle(s.x, s.y, 26 * z).fill({ color, alpha: 0.35 });
+        g.circle(s.x, s.y, 13 * z).fill(0xffffff);
+        continue;
+      }
+      if (p.kind === 'homing' && owner && isMinion(owner)) {
+        g.circle(s.x, s.y, (p.speed > 1000 ? 11 : 8) * z).fill({ color, alpha: 0.45 });
+        g.circle(s.x, s.y, (p.speed > 1000 ? 6 : 4) * z).fill(light);
+        continue;
+      }
       if (p.kind === 'homing') {
         // Auto-attacks are small; ability bolts (the blink's) glow brighter.
         const ability = p.source !== 'attack';
@@ -445,22 +506,66 @@ function drawLane(g: Graphics, origin: Vec, dir: Vec, length: number, width: num
     .stroke({ width: 3, color, alpha: edge });
 }
 
-function drawArena(): Graphics {
+/** Small deterministic noise, so the scenery looks scattered but never changes. */
+function hash(n: number): number {
+  const x = Math.sin(n * 127.1) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/** The mid lane: grass between jungle walls, a dirt path, the river across the middle, bases and turret platforms. */
+function drawMap(): Graphics {
   const { width: W, height: H } = WORLD_SIZE;
   const g = new Graphics();
-  g.rect(-2000, -2000, W + 4000, H + 4000).fill(0x0d1a12);
-  const tile = 200;
+  g.rect(-3000, -3000, W + 6000, H + 6000).fill(0x0a140e);
+
+  const tile = 250;
   for (let x = 0; x < W; x += tile) {
     for (let y = 0; y < H; y += tile) {
-      g.rect(x, y, tile, tile).fill((x / tile + y / tile) % 2 ? 0x2d5a37 : 0x315f3b);
+      g.rect(x, y, tile, tile).fill((x / tile + y / tile) % 2 ? 0x2d5a37 : 0x305e3a);
     }
   }
-  g.poly([W * 0.4, 0, W * 0.52, 0, W * 0.6, H, W * 0.48, H]).fill({ color: 0x2b5566, alpha: 0.55 });
-  g.rect(0, 0, W, H).stroke({ width: 14, color: 0x0a120c });
+  // The worn path minions walk.
+  g.roundRect(0, LANE_Y - 330, W, 660, 300).fill({ color: 0x8a7350, alpha: 0.28 });
+  g.roundRect(0, LANE_Y - 200, W, 400, 200).fill({ color: 0x9b8258, alpha: 0.18 });
+  // The river crossing mid.
+  g.poly([W * 0.46, -200, W * 0.52, -200, W * 0.54, H + 200, W * 0.48, H + 200]).fill({ color: 0x2b6a80, alpha: 0.55 });
+
+  // Jungle walls along both sides and behind the bases, with trees on top.
+  const wall = 0x1c2a20;
+  g.rect(-3000, -3000, W + 6000, 3000).fill(wall);
+  g.rect(-3000, H, W + 6000, 3000).fill(wall);
+  g.rect(-3000, 0, 3000, H).fill(wall);
+  g.rect(W, 0, 3000, H).fill(wall);
+  g.rect(0, 0, W, H).stroke({ width: 18, color: 0x0f1912 });
+  for (let i = 0; i < 160; i++) {
+    const top = i % 2 === 0;
+    const x = -600 + hash(i) * (W + 1200);
+    const y = top ? -40 - hash(i + 0.5) * 520 : H + 40 + hash(i + 0.5) * 520;
+    const r = 70 + hash(i + 0.25) * 90;
+    g.circle(x, y, r).fill({ color: hash(i + 0.75) > 0.5 ? 0x173a22 : 0x1e4529, alpha: 0.95 });
+  }
+
+  // Bases and fountains.
+  for (const team of ['blue', 'red'] as Team[]) {
+    const f = FOUNTAINS[team];
+    g.circle(f.x, f.y, FOUNTAIN_RADIUS + 120).fill({ color: 0x4d5560, alpha: 0.55 });
+    g.circle(f.x, f.y, FOUNTAIN_RADIUS).fill({ color: teamColor(team), alpha: 0.12 }).stroke({ width: 6, color: teamColor(team), alpha: 0.5 });
+    g.circle(f.x, f.y, 110).fill({ color: teamLight(team), alpha: 0.35 }).stroke({ width: 5, color: teamLight(team), alpha: 0.8 });
+    const t = TURRET_POSITIONS[team];
+    g.circle(t.x, t.y, 150).fill({ color: 0x5b6168, alpha: 0.7 }).stroke({ width: 5, color: 0x2a2f33, alpha: 0.8 });
+  }
   return g;
 }
 
-class UnitView {
+/** What the renderer needs from a unit's on-screen figure. */
+interface View {
+  readonly root: Container;
+  pop: number;
+  flash: number;
+  update(unit: Unit, alive: boolean, zoom: number, dt: number): void;
+}
+
+class UnitView implements View {
   readonly root = new Container();
   pop = 0;
   flash = 0;
@@ -526,7 +631,7 @@ class UnitView {
     const bh = 10;
     const by = -r * 3.3;
     b.roundRect(-bw / 2 - 2, by - 2, bw + 4, bh + 8, 3).fill({ color: 0x0b0b0b, alpha: 0.85 });
-    b.rect(-bw / 2, by, (bw * unit.hp) / unit.def.maxHp, bh).fill(this.isPlayer ? COLORS.hpAlly : COLORS.hpEnemy);
+    b.rect(-bw / 2, by, (bw * unit.hp) / unit.def.maxHp, bh).fill(hpColor(false, this.isPlayer));
     for (let hp = 100; hp < unit.def.maxHp; hp += 100) {
       b.rect(-bw / 2 + (bw * hp) / unit.def.maxHp, by, 1, bh).fill({ color: 0x000000, alpha: 0.5 });
     }
@@ -562,5 +667,101 @@ class ShadowView {
       .circle(r * 0.18, -r * 2.2, r * 0.09)
       .fill(DEATH_MARK_COLOR);
     this.root.addChild(shadow, body, eyes);
+  }
+}
+
+/** A lane minion: small, with a shape per type (blade, orb or cannon cart), and a thin health bar. */
+class MinionView implements View {
+  readonly root = new Container();
+  pop = 0;
+  flash = 0;
+  private readonly body = new Graphics();
+  private readonly flashBody = new Graphics();
+  private readonly bars = new Graphics();
+
+  constructor(unit: Unit, private readonly allied: boolean) {
+    const r = bodyRadius(unit.def);
+    const shadow = new Graphics().ellipse(0, 0, r * 1.1, r * 0.5).fill({ color: 0x000000, alpha: 0.3 });
+    this.draw(this.body, unit, teamColor(unit.team), teamLight(unit.team));
+    this.draw(this.flashBody, unit, 0xffffff, 0xffffff);
+    this.flashBody.alpha = 0;
+    this.root.addChild(shadow, this.body, this.flashBody, this.bars);
+  }
+
+  private draw(g: Graphics, unit: Unit, main: number, light: number): void {
+    const r = bodyRadius(unit.def);
+    const edge = { width: 2, color: 0x0a0a0a, alpha: 0.6 };
+    if (unit.def.id === 'minion-siege') {
+      g.roundRect(-r, -r * 0.9, r * 2, r * 0.9, r * 0.2).fill(main).stroke(edge);
+      g.circle(-r * 0.6, -r * 0.05, r * 0.3).circle(r * 0.6, -r * 0.05, r * 0.3).fill(0x2a2a2a);
+      g.roundRect(-r * 0.25, -r * 1.55, r * 1.2, r * 0.45, r * 0.15).fill(light).stroke(edge);
+      return;
+    }
+    g.roundRect(-r * 0.6, -r * 1.7, r * 1.2, r * 1.7, r * 0.5).fill(main).stroke(edge);
+    g.circle(0, -r * 1.85, r * 0.45).fill(light).stroke(edge);
+    if (unit.def.id === 'minion-caster') g.circle(r * 0.85, -r * 1.5, r * 0.28).fill({ color: light, alpha: 0.9 });
+    else g.moveTo(r * 0.6, -r * 0.6).lineTo(r * 1.15, -r * 1.6).stroke({ width: 3, color: 0xd9dde2, cap: 'round' });
+  }
+
+  update(unit: Unit, alive: boolean, zoom: number, dt: number): void {
+    const r = bodyRadius(unit.def);
+    this.pop = Math.max(0, this.pop - dt * 6);
+    this.flash = Math.max(0, this.flash - dt * 8);
+    // Face the way it walks or swings.
+    const facesLeft = Math.cos(unit.facing) < 0;
+    this.root.scale.set(zoom * (facesLeft ? -1 : 1) * (1 + this.pop * 0.08), zoom * (1 + this.pop * 0.08));
+    this.root.alpha = alive ? 1 : 0;
+    this.flashBody.alpha = this.flash * 0.8;
+    const b = this.bars.clear();
+    const bw = unit.def.id === 'minion-siege' ? 64 : 48;
+    const by = -r * 2.75;
+    b.rect(-bw / 2 - 1, by - 1, bw + 2, 7).fill({ color: 0x0b0b0b, alpha: 0.85 });
+    b.rect(-bw / 2, by, (bw * unit.hp) / unit.def.maxHp, 5).fill(hpColor(this.allied, false));
+  }
+}
+
+/** A turret: stone pedestal, tower and a team-colored crystal that charges up before each shot. */
+class TurretView implements View {
+  readonly root = new Container();
+  pop = 0;
+  flash = 0;
+  private readonly crystal = new Graphics();
+  private readonly flashBody = new Graphics();
+  private readonly bars = new Graphics();
+
+  constructor(unit: Unit, private readonly allied: boolean) {
+    const r = bodyRadius(unit.def);
+    const shadow = new Graphics().ellipse(0, 0, r * 1.6, r * 0.7).fill({ color: 0x000000, alpha: 0.4 });
+    const tower = new Graphics();
+    const edge = { width: 3, color: 0x0a0a0a, alpha: 0.6 };
+    tower.ellipse(0, -r * 0.2, r * 1.3, r * 0.55).fill(0x6c727a).stroke(edge);
+    tower.poly([-r * 0.9, -r * 0.3, r * 0.9, -r * 0.3, r * 0.6, -r * 3.6, -r * 0.6, -r * 3.6]).fill(0x8a9098).stroke(edge);
+    tower.rect(-r * 0.6, -r * 2.2, r * 1.2, r * 0.25).fill(teamColor(unit.team));
+    tower.poly([-r * 0.85, -r * 3.6, r * 0.85, -r * 3.6, r * 0.55, -r * 4.0, -r * 0.55, -r * 4.0]).fill(0x5d636b).stroke(edge);
+    this.flashBody.poly([-r * 0.9, -r * 0.3, r * 0.9, -r * 0.3, r * 0.6, -r * 3.6, -r * 0.6, -r * 3.6]).fill(0xffffff);
+    this.flashBody.alpha = 0;
+    this.root.addChild(shadow, tower, this.flashBody, this.crystal, this.bars);
+  }
+
+  update(unit: Unit, alive: boolean, zoom: number, dt: number): void {
+    const r = bodyRadius(unit.def);
+    this.pop = Math.max(0, this.pop - dt * 6);
+    this.flash = Math.max(0, this.flash - dt * 8);
+    this.root.scale.set(zoom);
+    this.root.alpha = alive ? 1 : 0;
+    this.flashBody.alpha = this.flash * 0.35;
+
+    const charge = unit.windup ? 1 - unit.windup.remaining / unit.windup.total : 0;
+    const top = -r * bodyHeight(unit.def);
+    const c = this.crystal.clear();
+    c.circle(0, top, r * (0.75 + 0.5 * charge)).fill({ color: teamColor(unit.team), alpha: 0.25 + 0.4 * charge });
+    c.poly([0, top - r * 0.7, r * 0.4, top, 0, top + r * 0.7, -r * 0.4, top]).fill(teamLight(unit.team)).stroke({ width: 2, color: 0xffffff, alpha: 0.8 });
+
+    const b = this.bars.clear();
+    const bw = 130;
+    const by = top - r * 1.3;
+    b.roundRect(-bw / 2 - 2, by - 2, bw + 4, 14, 3).fill({ color: 0x0b0b0b, alpha: 0.85 });
+    b.rect(-bw / 2, by, (bw * unit.hp) / unit.def.maxHp, 10).fill(hpColor(this.allied, false));
+    for (let hp = 1000; hp < unit.def.maxHp; hp += 1000) b.rect(-bw / 2 + (bw * hp) / unit.def.maxHp, by, 1, 10).fill({ color: 0x000000, alpha: 0.5 });
   }
 }

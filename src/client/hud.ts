@@ -9,6 +9,9 @@ export interface HudInfo {
   tickRate: number;
   kills: number;
   deaths: number;
+  /** Creep score: minions you last-hit. */
+  cs: number;
+  gold: number;
   cameraLocked: boolean;
   aiming: AbilitySlot | null;
   /** Mode / connection line shown top-right, e.g. "offline" or "online · room abc". */
@@ -71,13 +74,15 @@ export class Hud {
   private readonly help = label(13, { mono: true, color: 0xd6dcd8 });
   private readonly info = label(13, { mono: true, color: COLORS.muted });
   private readonly score = label(22, { bold: true, color: COLORS.gold });
+  private readonly farm = label(15, { bold: true, color: COLORS.text });
 
   constructor(note: string) {
     this.help.text = note ? `${HELP}\n\n${note}` : HELP;
     this.help.position.set(16, 14);
     this.info.anchor.set(1, 0);
     this.score.anchor.set(0.5, 0);
-    this.root.addChild(this.panel, this.abilityInfo, this.attackState, this.help, this.info, this.score);
+    this.farm.anchor.set(0.5, 0);
+    this.root.addChild(this.panel, this.abilityInfo, this.attackState, this.help, this.info, this.score, this.farm);
     const slots = {} as Record<AbilitySlot, SlotLabels>;
     for (const slot of ABILITY_SLOTS) {
       const key = label(14, { bold: true });
@@ -171,5 +176,7 @@ export class Hud {
     this.info.position.set(screenW - 16, 14);
     this.score.text = `You ${info.kills}  —  ${info.deaths} Enemy`;
     this.score.position.set(screenW / 2, 12);
+    this.farm.text = `CS ${info.cs}  ·  ${info.gold} gold`;
+    this.farm.position.set(screenW / 2, 44);
   }
 }
