@@ -50,6 +50,7 @@ export class PracticeBot {
   ) {}
 
   update(dt: number): void {
+    if (this.world.result) return;
     this.time += dt;
     const me = this.world.units.get(this.selfId);
     const foe = this.world.units.get(this.foeId);

@@ -126,6 +126,16 @@ outer turret, and minion waves. The rules follow LoL (minute-0 numbers from the 
 - **Last hits.** Gold goes to whoever lands the killing blow (20 / 14 / 50 per minion, 300
   per champion, 50 per turret). The HUD shows your CS and gold. There are no items yet.
 - **Fountain.** Standing in your own fountain heals 10% of max health and mana per second.
+- **Winning.** The first of three conditions ends the match:
+  - **First blood:** the first champion to die loses, to anything (champion, minion or turret).
+  - **First turret:** the side whose turret falls first loses.
+  - **First to 50 CS** (`CS_TO_WIN`): the first champion to last-hit 50 minions wins.
+
+  The HUD lists the conditions and shows both CS counts. When one is met, the game
+  freezes: no more time passes, waves stop and the bot stops. A Victory or Defeat screen
+  says why and shows K/D, CS and gold. "Back to menu" (or Enter) reloads the page, which
+  ends the game and closes any server connection. The usual LoL 1v1 rules use 100 CS;
+  this uses 50 to keep matches short.
 - **Ability rules on the lane.** Wayfinder's Rune Orb passes through minions (it only hits
   champions) and Skyline Barrage deals 150 to minions (rank 1), like Ezreal's W and R. Shadeblade's
   W cooldown refund and his death mark only count champions.
@@ -139,7 +149,7 @@ outer turret, and minion waves. The rules follow LoL (minute-0 numbers from the 
   are near, armor and magic resist, the first wave ignoring champions, minions aggroing
   on a champion who blocks their path, unit collision between champions and minions
   (champions walk through them), experience and levels, inner turrets, inhibitor and
-  nexus (there's no win condition yet), recall, and the fountain laser.
+  nexus, recall, and the fountain laser.
 
 ## Input feel
 
@@ -319,6 +329,5 @@ server/       Colyseus server and the DuelRoom
 ## Next steps
 
 1. Levels and items, so attack speed and damage can reach mid-game values.
-2. Reconnection and a rematch/end-of-game flow (win condition, end screen).
+2. Reconnection, and a rematch button on the end screen.
 3. Armor/magic resist and levels or items, then a second champion.
-4. A nexus and win condition (or LoL's 1v1 rules: first blood, 100 CS or first turret).

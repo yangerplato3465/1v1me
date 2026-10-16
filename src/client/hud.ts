@@ -1,6 +1,6 @@
 import { Container, Graphics, Text } from 'pixi.js';
 import { clamp } from '../sim/math';
-import { ABILITY_SLOTS, BASIC_MAX_RANK, MAX_LEVEL, ULTIMATE_MAX_RANK, XP_FOR_LEVEL, atRank, type AbilityDef, type AbilitySlot } from '../sim/defs';
+import { ABILITY_SLOTS, BASIC_MAX_RANK, CS_TO_WIN, MAX_LEVEL, ULTIMATE_MAX_RANK, XP_FOR_LEVEL, atRank, type AbilityDef, type AbilitySlot } from '../sim/defs';
 import { attackSpeedOf, canRankUp, type Unit } from '../sim/world';
 import { COLORS, FONT, MONO } from './theme';
 
@@ -11,6 +11,8 @@ export interface HudInfo {
   deaths: number;
   /** Creep score: minions you last-hit. */
   cs: number;
+  /** The enemy champion's creep score. */
+  enemyCs: number;
   gold: number;
   cameraLocked: boolean;
   aiming: AbilitySlot | null;
@@ -82,6 +84,7 @@ export class Hud {
   private readonly info = label(13, { mono: true, color: COLORS.muted });
   private readonly score = label(22, { bold: true, color: COLORS.gold });
   private readonly farm = label(15, { bold: true, color: COLORS.text });
+  private readonly goal = label(12, { color: COLORS.muted });
   private readonly level = label(20, { bold: true, color: COLORS.gold });
   private readonly points = label(14, { bold: true, color: COLORS.gold });
   /** Health and mana bars with "current / max" and regeneration per second, like LoL's HUD. */
@@ -96,12 +99,14 @@ export class Hud {
     this.info.anchor.set(1, 0);
     this.score.anchor.set(0.5, 0);
     this.farm.anchor.set(0.5, 0);
+    this.goal.anchor.set(0.5, 0);
+    this.goal.text = `Win: first blood · first turret · first to ${CS_TO_WIN} CS`;
     this.level.anchor.set(0.5);
     this.points.anchor.set(0.5, 1);
     for (const t of [this.hpText, this.manaText]) t.anchor.set(0.5);
     for (const t of [this.hpRegen, this.manaRegen]) t.anchor.set(1, 0.5);
     this.root.addChild(
-      this.panel, this.abilityInfo, this.attackState, this.help, this.info, this.score, this.farm, this.level, this.points,
+      this.panel, this.abilityInfo, this.attackState, this.help, this.info, this.score, this.farm, this.goal, this.level, this.points,
       this.hpText, this.hpRegen, this.manaText, this.manaRegen,
     );
     const slots = {} as Record<AbilitySlot, SlotLabels>;
@@ -277,7 +282,8 @@ export class Hud {
     this.info.position.set(screenW - 16, 14);
     this.score.text = `You ${info.kills}  —  ${info.deaths} Enemy`;
     this.score.position.set(screenW / 2, 12);
-    this.farm.text = `CS ${info.cs}  ·  ${info.gold} gold`;
+    this.farm.text = `CS ${info.cs}/${CS_TO_WIN} (enemy ${info.enemyCs})  ·  ${info.gold} gold`;
+    this.goal.position.set(screenW / 2, 68);
     this.farm.position.set(screenW / 2, 44);
   }
 }

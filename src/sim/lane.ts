@@ -99,10 +99,12 @@ export class Lane {
 
   constructor(private readonly world: World) {
     world.fountains = { ...FOUNTAINS };
+    world.winConditions = true;
     for (const team of TEAMS) world.addUnit(OUTER_TURRET, team, TURRET_POSITIONS[team]);
   }
 
   update(dt: number): void {
+    if (this.world.result) return;
     this.time += dt;
     while (this.time >= this.nextWaveAt) this.startWave();
     while (this.queue.length && this.time >= this.queue[0].at) {

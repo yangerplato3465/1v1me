@@ -5,6 +5,7 @@ import {
   CHAMPION_BOUNTY,
   CHAMPION_KILL_XP,
   CHAMPION_XP_RANGE,
+  CS_TO_WIN,
   MAX_LEVEL,
   MINION_XP_RANGE,
   ULTIMATE_LEVELS,
@@ -27,6 +28,7 @@ import {
   type DeathMarkAbility,
   type SkillshotAbility,
   type UnitKind,
+  type WinReason,
 } from './defs';
 import {
   add,
@@ -237,7 +239,13 @@ export type SimEvent =
   | { type: 'slash'; unitId: number; pos: Vec; radius: number }
   | { type: 'marked'; unitId: number; sourceId: number }
   | { type: 'deathMarked'; unitId: number; sourceId: number }
-  | { type: 'skillshotExpired'; pos: Vec; team: Team };
+  | { type: 'skillshotExpired'; pos: Vec; team: Team }
+  | { type: 'gameOver'; winner: Team; reason: WinReason };
+
+export interface MatchResult {
+  winner: Team;
+  reason: WinReason;
+}
 
 export interface WorldOptions {
   /**
@@ -345,6 +353,12 @@ interface HitContext {
 
 export class World {
   time = 0;
+  /** The lane match's win conditions (first blood, first turret, CS_TO_WIN); Lane turns them on. */
+  winConditions = false;
+  /** Set when a win condition is met; the world stops there. */
+  result: MatchResult | null = null;
+  /** Minions last-hit by each champion. */
+  readonly cs = new Map<number, number>();
   /** Time since the last regeneration tick, and whether this step is one. */
   private regenClock = 0;
   private regenTick = false;
@@ -500,6 +514,7 @@ export class World {
   }
 
   step(dt: number): void {
+    if (this.result) return; // the match is over: everything stays where it ended
     this.time += dt;
     // One clock for everyone, like LoL's regen ticks.
     this.regenClock += dt;
@@ -1257,6 +1272,27 @@ export class World {
     const bounty = target.def.bounty ?? (kind === 'champion' ? CHAMPION_BOUNTY : 0);
     this.events.push({ type: 'death', unitId: target.id, killerId: sourceId, kind, pos: { ...target.pos }, bounty });
     if (this.authoritative) this.awardXp(target, sourceId);
+    if (this.authoritative && this.winConditions) this.checkWin(target, kind, sourceId);
+  }
+
+  /** The first win condition met ends the match. */
+  private checkWin(victim: Unit, kind: UnitKind, killerId: number): void {
+    if (this.result) return;
+    const other: Team = victim.team === 'blue' ? 'red' : 'blue';
+    let result: MatchResult | null = null;
+    if (kind === 'champion') result = { winner: other, reason: 'firstBlood' };
+    else if (kind === 'turret') result = { winner: other, reason: 'firstTurret' };
+    else if (kind === 'minion') {
+      const killer = this.units.get(killerId);
+      if (killer && isChampion(killer)) {
+        const cs = (this.cs.get(killer.id) ?? 0) + 1;
+        this.cs.set(killer.id, cs);
+        if (cs >= CS_TO_WIN) result = { winner: killer.team, reason: 'cs' };
+      }
+    }
+    if (!result) return;
+    this.result = result;
+    this.events.push({ type: 'gameOver', ...result });
   }
 
   // --- experience and levels ---------------------------------------------------

@@ -7,6 +7,14 @@ export const RESPAWN_SECONDS = 3;
 /** Gold for killing a champion (LoL's base kill gold). */
 export const CHAMPION_BOUNTY = 300;
 
+/**
+ * How a lane match is won: the first of these ends it. First blood: the first champion to
+ * die (to anything) loses. First turret: the first turret to fall loses. CS: the first
+ * champion to last-hit this many minions wins.
+ */
+export const CS_TO_WIN = 50;
+export type WinReason = 'firstBlood' | 'firstTurret' | 'cs';
+
 type Sides<T> = { blue: T; red: T };
 
 /** Where each side's champion spawns, respawns and heals. */

@@ -1,6 +1,7 @@
 import { Application } from 'pixi.js';
 import { Camera } from './client/camera';
 import { Controls } from './client/controls';
+import { showEndScreen } from './client/endScreen';
 import { setupFullscreenButton } from './client/fullscreen';
 import { Hud } from './client/hud';
 import { OfflineSession } from './client/offline';
@@ -9,6 +10,7 @@ import { Renderer } from './client/renderer';
 import type { Session } from './client/session';
 import { CAST_MODES, castModeFor, loadSettings, saveSettings, type CameraLockMode, type CastMode, type Settings } from './client/settings';
 import { ABILITY_SLOTS, LANE_Y, PLAYABLE, WORLD_SIZE } from './sim/defs';
+import { isChampion } from './sim/world';
 
 type Mode = 'offline' | 'practice' | 'duel';
 
@@ -83,6 +85,15 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
   /** Minions you last-hit, and gold from every kill you landed. */
   let cs = 0;
   let gold = 0;
+  /** Minions each champion last-hit, for the race to CS_TO_WIN. */
+  const csBy = new Map<number, number>();
+  let over = false;
+
+  const enemyCs = () => {
+    const me = session.view.units.get(session.playerId);
+    const enemy = [...session.view.units.values()].find((u) => isChampion(u) && u.team !== me?.team);
+    return enemy ? (csBy.get(enemy.id) ?? 0) : 0;
+  };
 
   app.ticker.add((ticker) => {
     const dt = Math.min(ticker.deltaMS / 1000, 0.25);
@@ -97,6 +108,12 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
           gold += ev.bounty;
           if (ev.kind === 'minion') cs++;
         }
+        if (ev.kind === 'minion') csBy.set(ev.killerId, (csBy.get(ev.killerId) ?? 0) + 1);
+      }
+      if (ev.type === 'gameOver' && !over) {
+        over = true;
+        const myTeam = session.view.units.get(session.playerId)?.team;
+        showEndScreen(ev.winner === myTeam, ev.reason, { kills, deaths, cs, enemyCs: enemyCs(), gold });
       }
       // LoL's "move camera on revive": a free camera jumps back to you when you respawn.
       if (ev.type === 'respawn' && ev.unitId === session.playerId) {
@@ -129,6 +146,7 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
         kills,
         deaths,
         cs,
+        enemyCs: enemyCs(),
         gold,
         cameraLocked: camera.locked,
         aiming: controls.aiming,
