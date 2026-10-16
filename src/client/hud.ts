@@ -33,7 +33,7 @@ const HELP = [
 const SLOT = 64;
 const SLOT_GAP = 10;
 const PANEL_W = 340;
-const PANEL_H = 160;
+const PANEL_H = 200;
 const PLUS = 22;
 
 function label(size: number, opts: { color?: number; bold?: boolean; mono?: boolean } = {}): Text {
@@ -84,6 +84,11 @@ export class Hud {
   private readonly farm = label(15, { bold: true, color: COLORS.text });
   private readonly level = label(20, { bold: true, color: COLORS.gold });
   private readonly points = label(14, { bold: true, color: COLORS.gold });
+  /** Health and mana bars with "current / max" and regeneration per second, like LoL's HUD. */
+  private readonly hpText = label(12, { bold: true });
+  private readonly hpRegen = label(12, { bold: true, color: 0xbfe8c8 });
+  private readonly manaText = label(11, { bold: true });
+  private readonly manaRegen = label(11, { bold: true, color: 0xc6dcff });
 
   constructor(note: string, onLevelUp: (slot: AbilitySlot) => void) {
     this.help.text = note ? `${HELP}\n\n${note}` : HELP;
@@ -93,7 +98,12 @@ export class Hud {
     this.farm.anchor.set(0.5, 0);
     this.level.anchor.set(0.5);
     this.points.anchor.set(0.5, 1);
-    this.root.addChild(this.panel, this.abilityInfo, this.attackState, this.help, this.info, this.score, this.farm, this.level, this.points);
+    for (const t of [this.hpText, this.manaText]) t.anchor.set(0.5);
+    for (const t of [this.hpRegen, this.manaRegen]) t.anchor.set(1, 0.5);
+    this.root.addChild(
+      this.panel, this.abilityInfo, this.attackState, this.help, this.info, this.score, this.farm, this.level, this.points,
+      this.hpText, this.hpRegen, this.manaText, this.manaRegen,
+    );
     const slots = {} as Record<AbilitySlot, SlotLabels>;
     for (const slot of ABILITY_SLOTS) {
       const key = label(14, { bold: true });
@@ -198,6 +208,34 @@ export class Hud {
     const learned = shownSlot && player.ranks[shownSlot] > 0 ? `rank ${player.ranks[shownSlot]}` : 'not learned';
     this.abilityInfo.text = shown ? `${shownSlot} · ${shown.name} (${learned}) · ${reach} · ${atRank(shown.cooldown, shownRank)}s${cost}` : '';
     this.abilityInfo.position.set(px + 16, py + 92);
+
+    // Health and mana (or energy), with their regeneration per second at the right end.
+    const { maxHp, maxMana, hpRegen, manaRegen } = player.stats;
+    const barX = px + 16;
+    const barW = PANEL_W - 32;
+    const hpY = py + 116;
+    const hpH = 16;
+    const manaY = hpY + hpH + 3;
+    const manaH = 13;
+    const hpFrac = alive ? clamp(player.hp / maxHp, 0, 1) : 0;
+    g.rect(barX, hpY, barW, hpH).fill(0x0a0f0c).stroke({ width: 1, color: 0x2c3833 });
+    g.rect(barX, hpY, barW * hpFrac, hpH).fill(COLORS.hpAlly);
+    // Rounded like the max, but never 0 while alive.
+    this.hpText.text = `${alive ? Math.max(1, Math.round(player.hp)) : 0} / ${Math.round(maxHp)}`;
+    this.hpText.position.set(barX + barW / 2, hpY + hpH / 2);
+    this.hpRegen.text = `+${hpRegen.toFixed(1)}`;
+    this.hpRegen.position.set(barX + barW - 4, hpY + hpH / 2);
+    const hasMana = maxMana > 0;
+    this.manaText.visible = this.manaRegen.visible = hasMana;
+    if (hasMana) {
+      const manaFrac = alive ? clamp(player.mana / maxMana, 0, 1) : 0;
+      g.rect(barX, manaY, barW, manaH).fill(0x0a0f0c).stroke({ width: 1, color: 0x2c3833 });
+      g.rect(barX, manaY, barW * manaFrac, manaH).fill(player.def.resource === 'energy' ? COLORS.energy : COLORS.mana);
+      this.manaText.text = `${alive ? Math.round(player.mana) : 0} / ${Math.round(maxMana)}`;
+      this.manaText.position.set(barX + barW / 2, manaY + manaH / 2);
+      this.manaRegen.text = `+${manaRegen.toFixed(1)}`;
+      this.manaRegen.position.set(barX + barW - 4, manaY + manaH / 2);
+    }
 
     // Auto-attack timer: the orange segment is the windup, the rest is free to move.
     const attackSpeed = attackSpeedOf(player);

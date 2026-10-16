@@ -12,7 +12,7 @@ import {
   XP_FOR_LEVEL,
   type AbilitySlot,
 } from './defs';
-import { World, attackSpeedOf, canRankUp, type SimEvent, type Unit } from './world';
+import { REGEN_TICK_SECONDS, World, attackSpeedOf, canRankUp, type SimEvent, type Unit } from './world';
 
 const STEP = 1 / TICK_RATE;
 
@@ -160,6 +160,43 @@ describe('experience', () => {
     run(later, 1.5);
     // Three levels higher: 20% less per level beyond the first.
     expect(veteran.xp - xpBefore).toBeCloseTo(CHAMPION_KILL_XP[2] * 0.6);
+  });
+});
+
+describe('passive regeneration (LoL base stats, per 5 s on the wiki)', () => {
+  it('regenerates health and mana in 0.5 s ticks, growing with level, up to the max', () => {
+    const world = new World();
+    const me = world.addUnit(WAYFINDER, 'blue', { x: 3000, y: 800 }, { level: START_LEVEL });
+    // Ezreal: 4 HP5 (+0.65) and 8.5 MP5 (+1), so 0.8 + 0.13 and 1.7 + 0.2 per second per level of growth.
+    expect(me.stats.hpRegen).toBeCloseTo((4 + 0.65 * 2 * 0.7375) / 5, 6);
+    expect(me.stats.manaRegen).toBeCloseTo((8.5 + 1 * 2 * 0.7375) / 5, 6);
+    me.hp = 100;
+    me.mana = 50;
+    run(world, 0.4);
+    expect([me.hp, me.mana]).toEqual([100, 50]); // nothing between ticks
+    run(world, 0.2);
+    expect(me.hp).toBeCloseTo(100 + me.stats.hpRegen * REGEN_TICK_SECONDS, 6);
+    expect(me.mana).toBeCloseTo(50 + me.stats.manaRegen * REGEN_TICK_SECONDS, 6);
+    run(world, 4.4); // 10 ticks in all
+    expect(me.hp).toBeCloseTo(100 + me.stats.hpRegen * 5, 6);
+
+    me.hp = me.stats.maxHp - 0.1;
+    run(world, 1);
+    expect(me.hp).toBe(me.stats.maxHp);
+  });
+
+  it('Shadeblade gets 50 energy per 5 s and Zed\'s 7 HP5; nothing while dead', () => {
+    const world = new World();
+    const me = world.addUnit(SHADEBLADE, 'blue', { x: 3000, y: 800 }, { level: 1 });
+    me.mana = 0;
+    me.hp = 300;
+    run(world, 5);
+    expect(me.mana).toBeCloseTo(50, 6);
+    expect(me.hp).toBeCloseTo(307, 6);
+    me.respawnIn = 10;
+    const before = me.hp;
+    run(world, 2);
+    expect(me.hp).toBe(before);
   });
 });
 

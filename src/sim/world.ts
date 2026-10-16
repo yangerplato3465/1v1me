@@ -262,6 +262,9 @@ const ATTACK_MOVE_SNAP = 200;
  * last moments of its cooldown. Riot says only "a set duration"; this is an estimate.
  */
 export const SPELL_BUFFER_SECONDS = 0.4;
+
+/** LoL applies health and mana (and energy) regeneration in 0.5-second ticks (LoL wiki). */
+export const REGEN_TICK_SECONDS = 0.5;
 /** A unit-targeted cast picks the enemy nearest the cursor within this distance of it. */
 const TARGET_PICK_RADIUS = 250;
 /** Cooldown left on a death mark whose target died before the dash. */
@@ -342,6 +345,9 @@ interface HitContext {
 
 export class World {
   time = 0;
+  /** Time since the last regeneration tick, and whether this step is one. */
+  private regenClock = 0;
+  private regenTick = false;
   readonly units = new Map<number, Unit>();
   projectiles: Projectile[] = [];
   shadows: Shadow[] = [];
@@ -495,6 +501,10 @@ export class World {
 
   step(dt: number): void {
     this.time += dt;
+    // One clock for everyone, like LoL's regen ticks.
+    this.regenClock += dt;
+    this.regenTick = this.regenClock >= REGEN_TICK_SECONDS - 1e-9;
+    if (this.regenTick) this.regenClock -= REGEN_TICK_SECONDS;
     for (const u of this.units.values()) this.stepUnit(u, dt);
     this.resolveCollisions();
     this.stepShadows(dt);
@@ -629,8 +639,10 @@ export class World {
     const fountain = this.fountains[u.team];
     const healing = fountain && isChampion(u) && dist(u.pos, fountain) <= FOUNTAIN_RADIUS ? FOUNTAIN_REGEN : 0;
     const { maxHp, maxMana, hpRegen, manaRegen } = u.stats;
-    u.hp = Math.min(maxHp, u.hp + (hpRegen + healing * maxHp) * dt);
-    u.mana = Math.min(maxMana, u.mana + (manaRegen + healing * maxMana) * dt);
+    // Base regeneration lands every half second; the fountain heals smoothly on top.
+    const regen = this.regenTick ? REGEN_TICK_SECONDS : 0;
+    u.hp = Math.min(maxHp, u.hp + hpRegen * regen + healing * maxHp * dt);
+    u.mana = Math.min(maxMana, u.mana + manaRegen * regen + healing * maxMana * dt);
     for (const slot of ABILITY_SLOTS) u.cooldowns[slot] = Math.max(0, u.cooldowns[slot] - dt);
     u.attackCooldown = Math.max(0, u.attackCooldown - dt);
     if (u.postponed && (u.postponed.remaining -= dt) < 0) u.postponed = null;

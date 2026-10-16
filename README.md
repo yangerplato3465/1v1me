@@ -187,6 +187,12 @@ From the official LoL wiki (Experience, Champion ability and Champion statistic 
 - **Stat growth.** LoL's curve: `stat = base + g × (n − 1) × (0.7025 + 0.0175 × (n − 1))`,
   for health, mana, both regens and attack damage. Attack speed grows the same way as a
   bonus percentage. Health and mana gained on a level-up are added to the current amounts too.
+- **Regeneration.** Champions regenerate health and mana (or energy) all the time while
+  alive, from their LoL base stats: Wayfinder (Ezreal) 4 health and 8.5 mana per 5 s
+  (+0.65 and +1 growth), Shadeblade (Zed) 7 health per 5 s (+0.65) and 50 energy per 5 s.
+  As in LoL, it lands in 0.5-second ticks (`REGEN_TICK_SECONDS`) and stops at the max.
+  The HUD shows health and mana bars with "current / max" and the regeneration per second
+  at the right end, like LoL's; the fountain heals on top of it.
 - **Ranks.** Every number that changes by rank on the wiki uses the current rank: damage,
   cooldowns, costs, Shadeblade's slows, energy refund and stored damage. Arcane Bolt
   scales with total attack damage (130%), and Final Mark's detonation adds 100% of it.

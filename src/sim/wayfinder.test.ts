@@ -70,7 +70,7 @@ describe('Wayfinder W (Rune Orb)', () => {
       [r1(MARK.detonateDamage), true],
     ]);
     expect(markOn(foes[0])).toBeUndefined();
-    expect(me.mana).toBeCloseTo(manaBefore + WAYFINDER.manaRegen * 0.8, 3);
+    expect(me.mana).toBeCloseTo(manaBefore + WAYFINDER.manaRegen * 0.5, 3); // one 0.5 s regen tick in 0.8 s
   });
 
   it('refunds 60 mana plus the cost when an ability detonates the mark', () => {
@@ -87,7 +87,7 @@ describe('Wayfinder W (Rune Orb)', () => {
     ]);
     const spent = r1(W.manaCost) + r1(Q.manaCost);
     const refund = MARK.abilityManaRefund + r1(Q.manaCost);
-    expect(me.mana).toBeCloseTo(100 - spent + refund + WAYFINDER.manaRegen * 1.2, 3);
+    expect(me.mana).toBeCloseTo(100 - spent + refund + WAYFINDER.manaRegen * 1, 3); // two 0.5 s regen ticks in 1.2 s
   });
 
   it('expires after its duration', () => {
@@ -130,7 +130,7 @@ describe('Wayfinder E (Phase Step)', () => {
 
     expect(damageTo(events, near)).toHaveLength(0);
     expect(damageTo(events, marked).map((h) => h.amount)).toEqual([r1(E.bolt!.damage), r1(MARK.detonateDamage)]);
-    expect(me.mana).toBeCloseTo(200 - r1(E.manaCost) + MARK.abilityManaRefund + r1(E.manaCost) + WAYFINDER.manaRegen * 0.8, 3);
+    expect(me.mana).toBeCloseTo(200 - r1(E.manaCost) + MARK.abilityManaRefund + r1(E.manaCost) + WAYFINDER.manaRegen * 0.5, 3); // one regen tick
   });
 
   it('fires no bolt when no enemy is in range', () => {
