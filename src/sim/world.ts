@@ -1,6 +1,7 @@
 import {
   ABILITY_SLOTS,
   BASIC_MAX_RANK,
+  CHAMPION_BACK_RADIUS,
   CHAMPION_BOUNTY,
   CHAMPION_KILL_XP,
   CHAMPION_XP_RANGE,
@@ -16,6 +17,7 @@ import {
   FOUNTAIN_REGEN,
   RESPAWN_SECONDS,
   TICK_RATE,
+  VIEW_BEHIND,
   WORLD_SIZE,
   type AbilityDef,
   type AbilitySlot,
@@ -37,6 +39,7 @@ import {
   normalize,
   scale,
   segmentCircleHit,
+  segmentCutCircleHit,
   sub,
   turnToward,
   type Vec,
@@ -1100,7 +1103,12 @@ export class World {
       if (u.team === p.team || !this.isTargetable(u) || p.hitIds.includes(u.id)) continue;
       // Skillshots fly past turrets; some only collide with champions.
       if (isStructure(u) || (championsOnly && !isChampion(u))) continue;
-      const at = segmentCircleHit(p.pos, next, u.pos, u.def.radius + p.width / 2);
+      // Champions stand tall on screen: a missile that passes far enough behind one is drawn
+      // over its head, and flies past (see CHAMPION_BACK_RADIUS).
+      const reach = u.def.radius + p.width / 2;
+      const at = isChampion(u)
+        ? segmentCutCircleHit(p.pos, next, u.pos, reach, VIEW_BEHIND, CHAMPION_BACK_RADIUS + p.width / 2)
+        : segmentCircleHit(p.pos, next, u.pos, reach);
       if (at !== null) hits.push({ unit: u, at });
     }
     hits.sort((a, b) => a.at - b.at);

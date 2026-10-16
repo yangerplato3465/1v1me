@@ -1,5 +1,5 @@
 import { Container, Graphics, Text } from 'pixi.js';
-import { FOUNTAINS, FOUNTAIN_RADIUS, LANE_Y, TURRET_POSITIONS, WORLD_SIZE } from '../sim/defs';
+import { FOUNTAINS, FOUNTAIN_RADIUS, LANE_Y, MISSILE_HEIGHT, TURRET_POSITIONS, WORLD_SIZE } from '../sim/defs';
 import { add, angleOf, dist, fromAngle, normalize, scale, sub, type Vec } from '../sim/math';
 import {
   isChampion,
@@ -17,10 +17,8 @@ import type { Camera } from './camera';
 import type { Controls, MarkerKind } from './controls';
 import { COLORS, FONT, bodyHeight, bodyRadius, hpColor, teamColor, teamLight } from './theme';
 
-/** How high above the floor missiles fly, in world units. */
-const MISSILE_HEIGHT = 90;
-/** Turret shots fly this much higher, from the crystal at the top of the tower. */
-const TURRET_SHOT_LIFT = 230;
+/** Turret shots fly this much higher than other missiles, from the crystal at the top of the tower. */
+const TURRET_SHOT_LIFT = 270;
 /** Combat text starts this high above a unit's feet. */
 const FLOAT_HEIGHT = 220;
 const MARKER_SECONDS = 0.45;
@@ -79,8 +77,9 @@ export class Renderer {
   private readonly groundView = new Container();
   private readonly ground = new Container();
   private readonly groundFx = new Graphics();
-  /** Screen-space, upright units depth-sorted by world y. */
+  /** Screen-space, upright units and missiles, depth-sorted by where they stand on screen. */
   private readonly unitLayer = new Container();
+  private readonly missileViews = new Map<number, Graphics>();
   private readonly air = new Graphics();
   private readonly texts = new Container();
   private readonly views = new Map<number, View>();
@@ -203,16 +202,17 @@ export class Renderer {
 
   render(renderPos: RenderPos, projectilePos: ProjectilePos, shadowPos: ShadowPos, dt: number): void {
     this.camera.applyTo(this.groundView, this.ground);
-    this.drawGroundFx(renderPos, shadowPos, dt);
+    this.drawGroundFx(renderPos, projectilePos, shadowPos, dt);
     this.drawUnits(renderPos, dt);
     this.drawShadows(shadowPos);
-    this.drawAir(renderPos, projectilePos, dt);
+    this.drawMissiles(projectilePos);
+    this.drawAir(renderPos, dt);
     this.drawFloats(dt);
   }
 
   // --- floor: rings, range circles, aim lanes, click markers --------------
 
-  private drawGroundFx(renderPos: RenderPos, shadowPos: ShadowPos, dt: number): void {
+  private drawGroundFx(renderPos: RenderPos, projectilePos: ProjectilePos, shadowPos: ShadowPos, dt: number): void {
     const g = this.groundFx.clear();
     const player = this.world.units.get(this.playerId);
     const playerAlive = !!player && this.world.isAlive(player);
@@ -250,6 +250,14 @@ export class Renderer {
       if (u.statuses.some((st) => st.kind === 'slow')) {
         g.circle(p.x, p.y, u.def.radius + 2).fill({ color: SLOW_COLOR, alpha: 0.18 });
       }
+    }
+
+    // Each skillshot's shadow on the floor, as wide as it hits: where it really is, under the
+    // missile flying at waist height. Dodge the shadow, not the glow.
+    for (const p of this.world.projectiles) {
+      if (p.kind !== 'skillshot') continue;
+      const at = projectilePos(p);
+      g.circle(at.x, at.y, p.width / 2).fill({ color: 0x000000, alpha: 0.22 });
     }
 
     if (player && playerAlive) {
@@ -349,7 +357,7 @@ export class Renderer {
       const p = renderPos(u);
       const s = this.camera.worldToScreen(p);
       view.root.position.set(s.x, s.y);
-      view.root.zIndex = p.y;
+      view.root.zIndex = s.y;
       view.update(u, this.world.isAlive(u), this.camera, dt);
     }
   }
@@ -373,16 +381,83 @@ export class Renderer {
       const p = shadowPos(sh);
       const s = this.camera.worldToScreen(p);
       view.root.position.set(s.x, s.y);
-      view.root.zIndex = p.y;
+      view.root.zIndex = s.y;
       view.root.scale.set(this.camera.zoom);
       // Fade out over the last second.
       view.root.alpha = Math.min(1, sh.remaining) * (sh.swapped ? 0.55 : 0.8);
     }
   }
 
-  // --- missiles and hit sparks (screen space, lifted off the floor) --------
+  // --- missiles: upright, sorted with the units, so one behind you passes behind you ---
 
-  private drawAir(renderPos: RenderPos, projectilePos: ProjectilePos, dt: number): void {
+  private drawMissiles(projectilePos: ProjectilePos): void {
+    const live = new Set(this.world.projectiles.map((p) => p.id));
+    for (const [id, g] of this.missileViews) {
+      if (live.has(id)) continue;
+      g.destroy();
+      this.missileViews.delete(id);
+    }
+    const z = this.camera.zoom;
+    const lift = MISSILE_HEIGHT * z;
+    for (const p of this.world.projectiles) {
+      let g = this.missileViews.get(p.id);
+      if (!g) {
+        g = new Graphics();
+        this.missileViews.set(p.id, g);
+        this.unitLayer.addChild(g);
+      }
+      g.clear();
+      const s = this.camera.worldToScreen(projectilePos(p));
+      g.zIndex = s.y;
+      s.y -= lift;
+      this.drawMissile(g, p, s, z);
+    }
+  }
+
+  private drawMissile(g: Graphics, p: Projectile, s: Vec, z: number): void {
+    const color = teamColor(p.team);
+    const light = teamLight(p.team);
+    const owner = this.world.units.get(p.ownerId);
+    if (p.kind === 'homing' && owner && isStructure(owner)) {
+      s.y -= TURRET_SHOT_LIFT * z;
+      g.circle(s.x, s.y, 26 * z).fill({ color, alpha: 0.35 });
+      g.circle(s.x, s.y, 13 * z).fill(0xffffff);
+      return;
+    }
+    if (p.kind === 'homing' && owner && isMinion(owner)) {
+      g.circle(s.x, s.y, (p.speed > 1000 ? 11 : 8) * z).fill({ color, alpha: 0.45 });
+      g.circle(s.x, s.y, (p.speed > 1000 ? 6 : 4) * z).fill(light);
+      return;
+    }
+    if (p.kind === 'homing') {
+      // Auto-attacks are small; ability bolts (the blink's) glow brighter.
+      const ability = p.source !== 'attack';
+      g.circle(s.x, s.y, (ability ? 20 : 13) * z).fill({ color: ability ? 0x9be7ff : color, alpha: 0.35 });
+      g.circle(s.x, s.y, (ability ? 9 : 7) * z).fill(ability ? 0xffffff : light);
+      return;
+    }
+    const d = this.camera.dirToScreen(p.dir);
+    if (p.slot === 'W') {
+      // A slow, fat orb.
+      g.circle(s.x, s.y, p.width * 0.35 * z).fill({ color: MARK_COLOR, alpha: 0.3 });
+      g.circle(s.x, s.y, p.width * 0.18 * z).fill({ color: 0xe9c6ff, alpha: 0.95 });
+    } else if (p.slot === 'R') {
+      // A wide golden barrage.
+      const tail = sub(s, scale(d, 220 * z));
+      g.moveTo(tail.x, tail.y).lineTo(s.x, s.y).stroke({ width: p.width * 0.7 * z, color: ULT_COLOR, alpha: 0.25, cap: 'round' });
+      g.moveTo(tail.x, tail.y).lineTo(s.x, s.y).stroke({ width: p.width * 0.25 * z, color: 0xfff3c4, alpha: 0.9, cap: 'round' });
+    } else {
+      const tail = sub(s, scale(d, 90 * z));
+      const core = sub(s, scale(d, 45 * z));
+      g.moveTo(tail.x, tail.y).lineTo(s.x, s.y).stroke({ width: p.width * 0.4 * z, color, alpha: 0.3, cap: 'round' });
+      g.moveTo(core.x, core.y).lineTo(s.x, s.y).stroke({ width: 10 * z, color: 0xffffff, cap: 'round' });
+      g.circle(s.x, s.y, 11 * z).fill(light);
+    }
+  }
+
+  // --- turret beams and hit sparks (screen space, above everything) ---------
+
+  private drawAir(renderPos: RenderPos, dt: number): void {
     const g = this.air.clear();
     const z = this.camera.zoom;
     const lift = MISSILE_HEIGHT * z;
@@ -400,49 +475,6 @@ export class Renderer {
       g.moveTo(from.x, from.y)
         .lineTo(to.x, to.y)
         .stroke({ width: (onMe ? 4 : 2) * z, color: onMe ? COLORS.red : teamLight(t.team), alpha: onMe ? 0.85 : 0.35 });
-    }
-
-    for (const p of this.world.projectiles) {
-      const s = this.camera.worldToScreen(projectilePos(p));
-      s.y -= lift;
-      const color = teamColor(p.team);
-      const light = teamLight(p.team);
-      const owner = this.world.units.get(p.ownerId);
-      if (p.kind === 'homing' && owner && isStructure(owner)) {
-        s.y -= TURRET_SHOT_LIFT * z;
-        g.circle(s.x, s.y, 26 * z).fill({ color, alpha: 0.35 });
-        g.circle(s.x, s.y, 13 * z).fill(0xffffff);
-        continue;
-      }
-      if (p.kind === 'homing' && owner && isMinion(owner)) {
-        g.circle(s.x, s.y, (p.speed > 1000 ? 11 : 8) * z).fill({ color, alpha: 0.45 });
-        g.circle(s.x, s.y, (p.speed > 1000 ? 6 : 4) * z).fill(light);
-        continue;
-      }
-      if (p.kind === 'homing') {
-        // Auto-attacks are small; ability bolts (the blink's) glow brighter.
-        const ability = p.source !== 'attack';
-        g.circle(s.x, s.y, (ability ? 20 : 13) * z).fill({ color: ability ? 0x9be7ff : color, alpha: 0.35 });
-        g.circle(s.x, s.y, (ability ? 9 : 7) * z).fill(ability ? 0xffffff : light);
-        continue;
-      }
-      const d = this.camera.dirToScreen(p.dir);
-      if (p.slot === 'W') {
-        // A slow, fat orb.
-        g.circle(s.x, s.y, p.width * 0.35 * z).fill({ color: MARK_COLOR, alpha: 0.3 });
-        g.circle(s.x, s.y, p.width * 0.18 * z).fill({ color: 0xe9c6ff, alpha: 0.95 });
-      } else if (p.slot === 'R') {
-        // A wide golden barrage.
-        const tail = sub(s, scale(d, 220 * z));
-        g.moveTo(tail.x, tail.y).lineTo(s.x, s.y).stroke({ width: p.width * 0.7 * z, color: ULT_COLOR, alpha: 0.25, cap: 'round' });
-        g.moveTo(tail.x, tail.y).lineTo(s.x, s.y).stroke({ width: p.width * 0.25 * z, color: 0xfff3c4, alpha: 0.9, cap: 'round' });
-      } else {
-        const tail = sub(s, scale(d, 90 * z));
-        const core = sub(s, scale(d, 45 * z));
-        g.moveTo(tail.x, tail.y).lineTo(s.x, s.y).stroke({ width: p.width * 0.4 * z, color, alpha: 0.3, cap: 'round' });
-        g.moveTo(core.x, core.y).lineTo(s.x, s.y).stroke({ width: 10 * z, color: 0xffffff, cap: 'round' });
-        g.circle(s.x, s.y, 11 * z).fill(light);
-      }
     }
 
     this.sparks = this.sparks.filter((sp) => (sp.age += dt) < SPARK_SECONDS);

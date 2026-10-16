@@ -1,5 +1,5 @@
 import type { Container } from 'pixi.js';
-import { WORLD_SIZE } from '../sim/defs';
+import { VIEW_ROTATION, WORLD_SIZE } from '../sim/defs';
 import { clamp, type Vec } from '../sim/math';
 
 /**
@@ -7,13 +7,6 @@ import { clamp, type Vec } from '../sim/math';
  * and skillshot lanes read as ellipses on the floor, while units stay upright.
  */
 export const TILT = 0.78;
-
-/**
- * How the map is turned on screen. The sim's lane runs along +x; turning it 45° puts the
- * blue base bottom-left and the red base top-right, with the lane running diagonally like
- * LoL's mid lane.
- */
-export const VIEW_ROTATION = -Math.PI / 4;
 
 /**
  * World units that fit the screen's height before the tilt. It frames the game like LoL's

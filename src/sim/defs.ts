@@ -29,14 +29,32 @@ export const TURRET_POSITIONS: Sides<{ x: number; y: number }> = {
 };
 
 /**
- * Wave rules from the LoL wiki (patch 26.x). The first wave spawns at 0:30; waves come
- * every 30 s, every 25 s from 14:00 and every 20 s from 30:00. A wave walks out one minion
+ * How the map is turned on screen, the same for both players. The sim's lane runs along +x;
+ * turning it 45° puts the blue base bottom-left and the red base top-right, like LoL's mid lane.
+ */
+export const VIEW_ROTATION = -Math.PI / 4;
+/** The world direction that points up the screen: away from the camera, "behind" a unit. */
+export const VIEW_BEHIND = { x: -Math.sin(VIEW_ROTATION), y: -Math.cos(VIEW_ROTATION) };
+/** Skillshot missiles fly at about waist height, in world units. */
+export const MISSILE_HEIGHT = 50;
+/**
+ * A champion's hitbox reaches only this far behind it (up the screen), instead of its full
+ * radius, for skillshots. The camera draws champions tall, so a missile passing behind one
+ * shows up across its head; with this, the deepest hit a bolt can land is drawn at the
+ * shoulders, and one drawn at the head flies over. In front and to the sides the full
+ * radius counts, as in LoL. Both players see the map turned the same way, so it's fair.
+ */
+export const CHAMPION_BACK_RADIUS = 25;
+
+/**
+ * Wave rules from the LoL wiki (patch 26.x), except that the first wave comes early: 0:10
+ * here (0:30 in LoL), so practice gets going sooner. Waves come every 30 s, every 25 s from 14:00 and every 20 s from 30:00. A wave walks out one minion
  * at a time, 0.792 s apart: melee, then siege, then casters. A siege minion joins wave 3
  * and every 3rd wave after, every 2nd from 14:00 and every wave from 25:00. From 14:00 a
  * wave with a siege minion has one melee fewer; from 30:00 every wave has one caster fewer.
  */
 export const WAVES = {
-  firstAt: 30,
+  firstAt: 10,
   /** [from game time, seconds between waves] */
   interval: [
     [0, 30],

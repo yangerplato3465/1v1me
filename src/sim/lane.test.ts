@@ -4,6 +4,7 @@ import {
   CASTER_MINION,
   FOUNTAINS,
   MELEE_MINION,
+  MINION_SPAWNS,
   OUTER_TURRET,
   SIEGE_MINION,
   TICK_RATE,
@@ -45,7 +46,7 @@ const damageTo = (events: SimEvent[], u: Unit) =>
   events.filter((e): e is Extract<SimEvent, { type: 'damage' }> => e.type === 'damage' && e.targetId === u.id);
 
 describe('minion waves', () => {
-  it('walks a wave out single file at 0:30, one minion every 0.792 s: 3 melee, then 3 casters', () => {
+  it('walks the first wave out single file, one minion every 0.792 s: 3 melee, then 3 casters', () => {
     const { run, minions, lane } = setup();
     run(WAVES.firstAt - 0.1);
     expect(minions()).toHaveLength(0);
@@ -56,7 +57,11 @@ describe('minion waves', () => {
     });
     expect(spawned.map((s) => s.id)).toEqual(['minion-melee', 'minion-melee', 'minion-melee', 'minion-caster', 'minion-caster', 'minion-caster']);
     for (let i = 1; i < spawned.length; i++) expect(spawned[i].at - spawned[i - 1].at).toBeCloseTo(WAVES.spawnSpacing, 1);
-    for (const s of spawned) expect(s.pos).toEqual(spawned[0].pos); // all from the same spot, in a line behind each other
+    // All from the same spot, in a line behind each other (seen at most one step after leaving).
+    for (const s of spawned) {
+      expect(s.pos.y).toBe(MINION_SPAWNS.blue.y);
+      expect(dist(s.pos, MINION_SPAWNS.blue)).toBeLessThanOrEqual(MELEE_MINION.moveSpeed * STEP + 1e-6);
+    }
     expect(minions('red')).toHaveLength(6);
     run(WAVES.interval[0][1]);
     expect(lane.waves).toBe(2);
@@ -73,7 +78,7 @@ describe('minion waves', () => {
     expect([0, 14 * 60, 30 * 60].map(waveInterval)).toEqual([30, 25, 20]);
 
     const { run, lane, minions } = setup();
-    run(WAVES.firstAt + 60 + 6); // waves at 0:30, 1:00 and 1:30
+    run(WAVES.firstAt + 60 + 6); // the first wave, then 30 and 60 s later
     expect(lane.waves).toBe(3);
     expect(minions('blue').filter((m) => m.def === SIEGE_MINION)).toHaveLength(1);
   });

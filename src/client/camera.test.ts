@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { FOUNTAINS, LANE_Y, WORLD_SIZE } from '../sim/defs';
-import { Camera } from './camera';
+import {
+  CHAMPION_BACK_RADIUS,
+  FOUNTAINS,
+  LANE_Y,
+  MISSILE_HEIGHT,
+  SHADEBLADE,
+  WAYFINDER,
+  WORLD_SIZE,
+  type SkillshotAbility,
+} from '../sim/defs';
+import { Camera, TILT } from './camera';
+import { bodyRadius } from './theme';
 
 describe('Camera', () => {
   const camera = new Camera({ x: WORLD_SIZE.width / 2, y: LANE_Y });
@@ -62,5 +72,14 @@ describe('Camera', () => {
     fixed.resize(1600, 900);
     fixed.centerOn({ x: 4000, y: LANE_Y });
     expect(fixed.worldToScreen({ x: 4000, y: LANE_Y })).toEqual({ x: 800, y: 450 });
+  });
+
+  it('the deepest skillshot hit on a champion is drawn at the shoulders, never across the head', () => {
+    // Champion bodies are drawn 2 body radii tall to the shoulders; the head sits above.
+    const shoulders = 2 * bodyRadius(WAYFINDER);
+    for (const q of [WAYFINDER.abilities.Q, SHADEBLADE.abilities.Q] as SkillshotAbility[]) {
+      const deepest = (CHAMPION_BACK_RADIUS + q.width / 2) * TILT + MISSILE_HEIGHT;
+      expect(deepest).toBeLessThan(shoulders);
+    }
   });
 });

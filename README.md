@@ -86,7 +86,8 @@ The map is a single mid lane running diagonally from the blue base (bottom left)
 walled in by jungle, with the river across the middle. Each side has a fountain, one
 outer turret, and minion waves. The rules follow LoL (minute-0 numbers from the LoL wiki):
 
-- **Waves.** The first wave leaves at 0:30, then one every 30 s (25 s from 14:00, 20 s
+- **Waves.** The first wave leaves at 0:10 (LoL: 0:30, shortened so practice starts
+  sooner; `WAVES.firstAt`), then one every 30 s (25 s from 14:00, 20 s
   from 30:00). A wave walks out of the base single file, one minion every 0.792 s: 3
   melee, then the siege minion, then 3 casters. Siege minions join wave 3 and every 3rd
   wave after (every 2nd from 14:00, every wave from 25:00). From 14:00 a wave with a siege
@@ -263,6 +264,16 @@ Wayfinder.
 - **Range and hitboxes.** Champions have LoL's 65-unit gameplay radius, and attack range
   is edge to edge, so 550 range reaches 680 between centers. Skillshot range is measured
   from the caster's center.
+- **Skillshots in 3D.** Missiles fly at waist height (`MISSILE_HEIGHT`) and cast a shadow
+  on the floor that is as wide as they hit, so you can dodge the shadow. They are sorted
+  with the units by depth, so one passing behind you is drawn behind you. Because the
+  camera draws champions tall, a missile passing behind a champion would show up across
+  its head; so for skillshots a champion's hitbox reaches only 25 units behind it (up the
+  screen, `CHAMPION_BACK_RADIUS`) instead of 65. The deepest hit is drawn at the
+  shoulders, and a missile drawn at the head flies over. The full radius still counts in
+  front and to the sides, and minions keep their full circle. Both players see the map
+  turned the same way, so this is fair. This is a departure from LoL, whose hitboxes are
+  plain circles on the ground.
 - **Abilities.** Champions have Q/W/E/R slots holding data-driven abilities: `skillshot`
   (stops at the first enemy or pierces, with on-hit effects such as cooldown refunds and
   marks), `blink` (with an optional homing bolt), `shadow` (a placeable copy that mimics
