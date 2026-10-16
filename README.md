@@ -10,11 +10,13 @@ npm test        # sim rules, prediction over a fake laggy network, server integr
 npm run typecheck
 ```
 
-The start menu offers three modes:
+The start menu offers these modes:
 
 | Mode | What runs where |
 |---|---|
-| **Find a duel** | Online 1v1. Open two tabs or browsers to play yourself |
+| **Find a duel** | Online 1v1 with whoever else is looking. Open two tabs or browsers to play yourself |
+| **Create a room** | A private online 1v1 with a **4-digit code**, shown big over the game until your friend arrives |
+| **Room code + Join** | Type the code a friend sees to join their room |
 | **Online practice** | You vs the practice bot, with the bot running on the server |
 | **Offline practice** | Everything in the browser, no server needed |
 
@@ -56,6 +58,14 @@ saved in the browser:
 | Normal cast | Press to aim, left-click to cast; press the key again to put it away |
 
 ## How online play works
+
+- **Room codes.** "Create a room" asks the server for a private room; `server/DuelRoom.ts`
+  gives it a free random code from 1000 to 9999 and uses it as the room's id, so "Join"
+  is Colyseus's `joinById(code)`. Private rooms stay out of "Find a duel" matchmaking.
+  A room holds two players, so a third can't join. A code is freed when its room closes
+  (both players gone), and no two open rooms share one. The minion waves start when the
+  friend arrives. A wrong, full or closed code shows an error on the start page. The
+  code entry takes digits only.
 
 - **The server is authoritative.** `src/net/authority.ts` owns the only real `World`;
   `server/DuelRoom.ts` steps it at 30 Hz with Colyseus's fixed timestep. Clients send

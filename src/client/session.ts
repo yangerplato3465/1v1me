@@ -18,4 +18,6 @@ export interface Session {
   projectilePos(p: Projectile): Vec;
   shadowPos(s: Shadow): Vec;
   status(): string;
+  /** A big notice over the game, e.g. the room code while waiting for a friend. */
+  banner?(): string | null;
 }

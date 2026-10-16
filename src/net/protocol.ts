@@ -26,7 +26,15 @@ export interface JoinOptions {
   champ?: string;
   /** Summoner spells on D and F; invalid or duplicate picks fall back to the defaults. */
   summoners?: Record<SummonerSlot, SummonerId>;
+  /**
+   * Create a private room with a 4-digit code (its room id) that a friend joins with
+   * `joinById(code)`. Matchmaking ("Find a duel") never puts anyone else in it.
+   */
+  privateRoom?: boolean;
 }
+
+/** Room codes are 4 digits, 1000-9999 (no leading zero to get lost). */
+export const isRoomCode = (s: string): boolean => /^[1-9]\d{3}$/.test(s);
 
 export interface Welcome {
   unitId: number;

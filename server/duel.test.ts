@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { MSG, ROOM_NAME, type Snapshot, type Welcome } from '../src/net/protocol';
 import { OnlineSession } from '../src/client/online';
 import { CHAMPIONS } from '../src/sim/defs';
+import { newRoomCode } from './DuelRoom';
 import { createServer } from './app';
 
 const PORT = 2599;
@@ -106,7 +107,7 @@ describe('DuelRoom', () => {
   });
 
   it('the browser session mirrors snapshots and interpolates your champion', async () => {
-    const session = await OnlineSession.connect(`http://localhost:${PORT}`, true);
+    const session = await OnlineSession.connect(`http://localhost:${PORT}`, { mode: 'practice' });
     const frame = async () => {
       session.update(1 / 60);
       await new Promise((r) => setTimeout(r, 16));
@@ -135,7 +136,7 @@ describe('DuelRoom', () => {
   it('predicts your own champion through a real laggy connection', async () => {
     server.simulateLatency(200);
     try {
-      const session = await OnlineSession.connect(`http://localhost:${PORT}`, true);
+      const session = await OnlineSession.connect(`http://localhost:${PORT}`, { mode: 'practice' });
       const frame = async () => {
         session.update(1 / 60);
         await new Promise((r) => setTimeout(r, 16));
@@ -160,3 +161,58 @@ describe('DuelRoom', () => {
   });
 });
 
+describe('room codes', () => {
+  it('"Create a room" gets a 4-digit code; a friend joins with it and the match starts', async () => {
+    const host = track(await client().create(ROOM_NAME, { privateRoom: true }));
+    const code = host.room.roomId;
+    expect(code).toMatch(/^[1-9]\d{3}$/);
+
+    // Matchmaking never puts a stranger in it.
+    const stranger = await client().joinOrCreate(ROOM_NAME, {});
+    expect(stranger.roomId).not.toBe(code);
+    await stranger.leave();
+
+    const friend = track(await client().joinById(code, {}));
+    expect(friend.room.roomId).toBe(code);
+    const s = await until(() => (champions(host.latest()).length === 2 ? host.latest() : null));
+    expect(new Set(champions(s).map((u) => u.team))).toEqual(new Set(['blue', 'red']));
+
+    // Two is a match: a third player can't get in, and a wrong code finds nothing.
+    await expect(client().joinById(code, {})).rejects.toThrow();
+    await expect(client().joinById(code === '9999' ? '9998' : '9999', {})).rejects.toThrow();
+    await Promise.all([host.room.leave(), friend.room.leave()]);
+  });
+
+  it('online sessions show the code while waiting for the friend', async () => {
+    const host = await OnlineSession.connect(`http://localhost:${PORT}`, { mode: 'create' });
+    expect(host.roomCode).toMatch(/^[1-9]\d{3}$/);
+    await until(() => {
+      host.update(1 / 60);
+      return host.view.units.get(host.playerId);
+    });
+    expect(host.banner()).toContain(`Room code  ${host.roomCode}`);
+
+    const friend = await OnlineSession.connect(`http://localhost:${PORT}`, { mode: 'join', code: host.roomCode! });
+    expect(friend.roomCode).toBe(host.roomCode);
+    await until(() => {
+      host.update(1 / 60);
+      return host.banner() === null;
+    });
+    await Promise.all([host.leave(), friend.leave()]);
+  });
+
+  it('never hands out a code that is in use, and frees it when the room closes', async () => {
+    const room = await client().create(ROOM_NAME, { privateRoom: true });
+    const taken = room.roomId;
+    const other = taken === '9999' ? '1000' : '9999';
+    const roll = (code: string) => (Number(code) - 1000 + 0.5) / 9000;
+    // A random source that lands on the taken code first, then on another.
+    const rolls = () => {
+      const values = [roll(taken), roll(other)];
+      return () => values.shift() ?? roll(other);
+    };
+    expect(newRoomCode(rolls())).toBe(other);
+    await room.leave();
+    await until(() => newRoomCode(rolls()) === taken);
+  });
+});

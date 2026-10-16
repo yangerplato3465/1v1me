@@ -10,7 +10,7 @@ import {
   type Welcome,
 } from '../net/protocol';
 import { clamp, dist, lerpVec, normalize, sub, type Vec } from '../sim/math';
-import type { GameView, PlayerCommand, Projectile, Shadow, SimEvent, Unit } from '../sim/world';
+import { isChampion, type GameView, type PlayerCommand, type Projectile, type Shadow, type SimEvent, type Unit } from '../sim/world';
 import { CosmeticMissiles } from './cosmetic';
 import { Predictor } from './prediction';
 import type { Session } from './session';
@@ -60,6 +60,20 @@ export function defaultServerUrl(): string {
   return import.meta.env.VITE_SERVER_URL ?? `${location.protocol}//${location.hostname}:${DEFAULT_PORT}`;
 }
 
+/** How to get into a room. */
+export interface ConnectOptions {
+  /**
+   * duel: matchmaking with anyone; practice: alone with the server's bot; create: a private
+   * room with a 4-digit code; join: the room with that `code`.
+   */
+  mode: 'duel' | 'practice' | 'create' | 'join';
+  code?: string;
+  /** Client-side prediction of your own champion (default on). */
+  predict?: boolean;
+  champ?: string;
+  summoners?: Record<SummonerSlot, SummonerId>;
+}
+
 /**
  * Mirrors the authoritative server. Other units are drawn from interpolated snapshots
  * about 2 ticks in the past. Your own champion is predicted (see Predictor) so it
@@ -84,17 +98,17 @@ export class OnlineSession implements Session {
   private serverShadows: Shadow[] = [];
   private calibrateIn = 0;
 
-  static async connect(
-    endpoint: string,
-    practice: boolean,
-    predict = true,
-    champ?: string,
-    summoners?: Record<SummonerSlot, SummonerId>,
-  ): Promise<OnlineSession> {
+  static async connect(endpoint: string, how: ConnectOptions = { mode: 'duel' }): Promise<OnlineSession> {
     const client = new Client(endpoint);
-    const options: JoinOptions = practice ? { practice: true, champ, summoners } : { champ, summoners };
-    const room = practice ? await client.create(ROOM_NAME, options) : await client.joinOrCreate(ROOM_NAME, options);
-    const session = new OnlineSession(room, practice, predict);
+    const { mode, champ, summoners } = how;
+    const options: JoinOptions = { champ, summoners };
+    let room: Room;
+    if (mode === 'practice') room = await client.create(ROOM_NAME, { ...options, practice: true });
+    else if (mode === 'create') room = await client.create(ROOM_NAME, { ...options, privateRoom: true });
+    else if (mode === 'join') room = await client.joinById(how.code ?? '', options);
+    else room = await client.joinOrCreate(ROOM_NAME, options);
+    const code = mode === 'create' || mode === 'join' ? room.roomId : null;
+    const session = new OnlineSession(room, mode === 'practice', how.predict ?? true, code);
     await session.welcomed;
     return session;
   }
@@ -105,10 +119,14 @@ export class OnlineSession implements Session {
     private readonly room: Room,
     private readonly practice: boolean,
     private readonly predict: boolean,
+    /** The 4-digit code of a code room ("Create a room" / "Join"), or null. */
+    readonly roomCode: string | null = null,
   ) {
     this.note = practice
       ? 'Online practice: the bot runs on the server.'
-      : 'Online duel: open a second tab or browser to play against yourself.';
+      : roomCode
+        ? `Room ${roomCode}: a friend joins with this code from the start page.`
+        : 'Online duel: open a second tab or browser to play against yourself.';
     // Register every handler before the first await so no early snapshot is dropped.
     room.onMessage(MSG.snapshot, (s: Snapshot) => this.onSnapshot(s));
     room.onLeave(() => (this.disconnected = true));
@@ -199,11 +217,24 @@ export class OnlineSession implements Session {
   status(): string {
     if (this.disconnected) return 'disconnected from server';
     const mode = this.practice ? 'online practice' : 'online duel';
-    const waiting = !this.practice && this.view.units.size < 2 ? ' · waiting for opponent…' : '';
+    const waiting = this.waitingForOpponent() ? ' · waiting for opponent…' : '';
     const ahead = this.predictor?.ticksAhead;
     const rtt = ahead === null || ahead === undefined ? '…' : `~${Math.round((ahead * 1000) / this.tickRate)} ms`;
     const prediction = this.predict ? 'prediction on' : 'prediction off';
     return `${mode} · room ${this.room.roomId}${waiting}\nround trip ${rtt} · ${prediction}`;
+  }
+
+  /** True until a second champion is in the match (never in practice: the bot is there). */
+  private waitingForOpponent(): boolean {
+    if (this.practice || this.disconnected) return false;
+    return [...this.view.units.values()].filter(isChampion).length < 2;
+  }
+
+  banner(): string | null {
+    if (!this.waitingForOpponent()) return null;
+    return this.roomCode
+      ? `Room code  ${this.roomCode}\nShare it with a friend: they pick "Join" on the start page and type it in.`
+      : 'Waiting for an opponent…';
   }
 
   private interpolate(a: Vec | undefined, b: Vec | undefined): Vec | null {

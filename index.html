@@ -21,6 +21,14 @@
       #menu small { display: block; margin-top: 4px; font-weight: 400; color: #9aa7a0; font-size: 13px; }
       #menu-error { min-height: 1.4em; color: #ff8a8a; font-size: 14px; }
       #menu button.secondary { border-color: #44515c; }
+      #join-row { display: flex; gap: 10px; }
+      #menu #join-row button { min-width: 0; flex: 0 0 96px; }
+      #room-code {
+        flex: 1; min-width: 0; padding: 12px 14px; font: inherit; font-size: 20px; font-weight: 700; letter-spacing: 0.3em;
+        text-align: center; color: #f4f1e8; background: #0b1610; border: 2px solid #44515c; border-radius: 10px;
+      }
+      #room-code:focus { outline: none; border-color: #c8aa6e; }
+      #room-code::placeholder { font-size: 15px; font-weight: 500; letter-spacing: normal; color: #6f7d76; }
       #settings {
         display: none; width: min(420px, calc(100vw - 32px)); text-align: left; gap: 14px;
         max-height: calc(100vh - 32px); overflow-y: auto; padding-right: 4px;
@@ -79,6 +87,11 @@
       <div id="main">
         <div id="champions" role="radiogroup" aria-label="Champion"></div>
         <button data-mode="duel">Find a duel<small>Online 1v1 — open two tabs to test</small></button>
+        <button data-mode="create">Create a room<small>Get a 4-digit code to share with a friend</small></button>
+        <div id="join-row">
+          <input id="room-code" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="Room code" aria-label="4-digit room code" />
+          <button data-mode="join">Join</button>
+        </div>
         <button data-mode="practice">Online practice<small>You vs the bot, on the server</small></button>
         <button data-mode="offline">Offline practice<small>No server needed</small></button>
         <button class="secondary" id="open-settings">Settings</button>

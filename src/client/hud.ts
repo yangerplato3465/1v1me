@@ -18,6 +18,8 @@ export interface HudInfo {
   aiming: AbilitySlot | null;
   /** Mode / connection line shown top-right, e.g. "offline" or "online · room abc". */
   status: string;
+  /** Big notice under the score, e.g. the room code while waiting for a friend. */
+  banner: string | null;
 }
 
 const HELP = [
@@ -97,6 +99,9 @@ export class Hud {
   private readonly score = label(22, { bold: true, color: COLORS.gold });
   private readonly farm = label(15, { bold: true, color: COLORS.text });
   private readonly goal = label(12, { color: COLORS.muted });
+  /** The banner's first line, big (the room code), and the rest under it. */
+  private readonly banner = label(34, { bold: true, color: COLORS.gold });
+  private readonly bannerNote = label(15, { color: COLORS.text });
   private readonly level = label(20, { bold: true, color: COLORS.gold });
   private readonly points = label(14, { bold: true, color: COLORS.gold });
   /** Health and mana bars with "current / max" and regeneration per second, like LoL's HUD. */
@@ -112,6 +117,8 @@ export class Hud {
     this.score.anchor.set(0.5, 0);
     this.farm.anchor.set(0.5, 0);
     this.goal.anchor.set(0.5, 0);
+    this.banner.anchor.set(0.5, 0);
+    this.bannerNote.anchor.set(0.5, 0);
     this.goal.text = `Win: first blood · first turret · first to ${CS_TO_WIN} CS`;
     this.level.anchor.set(0.5);
     this.points.anchor.set(0.5, 1);
@@ -119,7 +126,7 @@ export class Hud {
     for (const t of [this.hpRegen, this.manaRegen]) t.anchor.set(1, 0.5);
     this.root.addChild(
       this.panel, this.abilityInfo, this.attackState, this.help, this.info, this.score, this.farm, this.goal, this.level, this.points,
-      this.hpText, this.hpRegen, this.manaText, this.manaRegen,
+      this.hpText, this.hpRegen, this.manaText, this.manaRegen, this.banner, this.bannerNote,
     );
     const slots = {} as Record<AbilitySlot, SlotLabels>;
     for (const slot of ABILITY_SLOTS) {
@@ -335,6 +342,11 @@ export class Hud {
     this.score.position.set(screenW / 2, 12);
     this.farm.text = `CS ${info.cs}/${CS_TO_WIN} (enemy ${info.enemyCs})  ·  ${info.gold} gold`;
     this.goal.position.set(screenW / 2, 68);
+    const [headline = '', ...rest] = (info.banner ?? '').split('\n');
+    this.banner.text = headline;
+    this.bannerNote.text = rest.join('\n');
+    this.banner.position.set(screenW / 2, 100);
+    this.bannerNote.position.set(screenW / 2, 148);
     this.farm.position.set(screenW / 2, 44);
   }
 }

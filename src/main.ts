@@ -6,20 +6,21 @@ import { setupFullscreenButton } from './client/fullscreen';
 import { Hud } from './client/hud';
 import { OfflineSession } from './client/offline';
 import { OnlineSession, defaultServerUrl } from './client/online';
+import { isRoomCode } from './net/protocol';
 import { Renderer } from './client/renderer';
 import type { Session } from './client/session';
 import { CAST_MODES, castModeFor, loadSettings, saveSettings, type CameraLockMode, type CastMode, type Settings } from './client/settings';
 import { ABILITY_SLOTS, LANE_Y, PLAYABLE, SUMMONERS, SUMMONER_IDS, WORLD_SIZE, type SummonerId, type SummonerSlot } from './sim/defs';
 import { isChampion } from './sim/world';
 
-type Mode = 'offline' | 'practice' | 'duel';
+type Mode = 'offline' | 'practice' | 'duel' | 'create' | 'join';
 
-async function startSession(mode: Mode, settings: Settings): Promise<Session> {
+async function startSession(mode: Mode, settings: Settings, code?: string): Promise<Session> {
   const champ = PLAYABLE.find((c) => c.id === settings.champion) ?? PLAYABLE[0];
   if (mode === 'offline') return new OfflineSession(champ, settings.summoners);
   // ?predict=0 turns client-side prediction off, to compare against plain interpolation.
   const predict = new URLSearchParams(location.search).get('predict') !== '0';
-  return OnlineSession.connect(defaultServerUrl(), mode === 'practice', predict, champ.id, settings.summoners);
+  return OnlineSession.connect(defaultServerUrl(), { mode, code, predict, champ: champ.id, summoners: settings.summoners });
 }
 
 function setupChampionSelect(settings: Settings): void {
@@ -151,6 +152,7 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
         cameraLocked: camera.locked,
         aiming: controls.aiming,
         status: session.status(),
+        banner: session.banner?.() ?? null,
       });
     }
   });
@@ -235,17 +237,35 @@ function showMenu(): void {
   setupChampionSelect(settings);
   setupFullscreenButton(document.getElementById('fullscreen-menu') as HTMLButtonElement);
 
+  const codeInput = document.getElementById('room-code') as HTMLInputElement;
+  // Digits only, at most 4.
+  codeInput.addEventListener('input', () => (codeInput.value = codeInput.value.replace(/\D/g, '').slice(0, 4)));
+  codeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') menu.querySelector<HTMLButtonElement>('button[data-mode="join"]')!.click();
+  });
+
   for (const button of buttons.filter((b) => b.dataset.mode)) {
     button.addEventListener('click', async () => {
+      const mode = button.dataset.mode as Mode;
+      const code = codeInput.value;
+      if (mode === 'join' && !isRoomCode(code)) {
+        error.textContent = 'Type the 4-digit room code your friend sees.';
+        codeInput.focus();
+        return;
+      }
       buttons.forEach((b) => (b.disabled = true));
-      error.textContent = button.dataset.mode === 'offline' ? '' : 'Connecting…';
+      error.textContent = mode === 'offline' ? '' : 'Connecting…';
       try {
-        const session = await startSession(button.dataset.mode as Mode, settings);
+        const session = await startSession(mode, settings, code);
         menu.remove();
         await runGame(session, settings);
       } catch (err) {
         console.error(err);
-        error.textContent = `Could not connect to ${defaultServerUrl()}. Is the server running (npm run dev)?`;
+        const reason = err instanceof Error ? err.message : String(err);
+        error.textContent =
+          mode === 'join' && !/fetch|network|ECONN|connect/i.test(reason)
+            ? `No open room with code ${code}. Check the number; the room may be full or closed.`
+            : `Could not connect to ${defaultServerUrl()}. Is the server running (npm run dev)?`;
         buttons.forEach((b) => (b.disabled = false));
       }
     });
