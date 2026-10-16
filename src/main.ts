@@ -7,6 +7,7 @@ import { Hud } from './client/hud';
 import { OfflineSession } from './client/offline';
 import { OnlineSession, defaultServerUrl } from './client/online';
 import { isRoomCode } from './net/protocol';
+import { VERSION } from './net/version';
 import { Renderer } from './client/renderer';
 import type { Session } from './client/session';
 import { CAST_MODES, castModeFor, loadSettings, saveSettings, type CameraLockMode, type CastMode, type Settings } from './client/settings';
@@ -232,6 +233,7 @@ function showMenu(): void {
   const menu = document.getElementById('menu')!;
   const error = document.getElementById('menu-error')!;
   const buttons = [...menu.querySelectorAll<HTMLButtonElement>('button[data-mode], #open-settings')];
+  document.getElementById('version')!.textContent = `v${VERSION}`;
   const settings = loadSettings();
   setupSettings(settings);
   setupChampionSelect(settings);

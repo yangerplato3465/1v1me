@@ -12,6 +12,7 @@
         font-family: Inter, "Segoe UI", system-ui, sans-serif; color: #f4f1e8;
       }
       #menu h1 { margin: 0 0 8px; font-size: 44px; letter-spacing: 0.04em; color: #c8aa6e; }
+      #version { position: fixed; left: 14px; bottom: 10px; margin: 0; color: #6f7d76; font-size: 12px; }
       #menu button {
         min-width: 280px; padding: 14px 20px; font: inherit; font-size: 16px; font-weight: 600; cursor: pointer;
         color: #f4f1e8; background: #12251a; border: 2px solid #c8aa6e; border-radius: 10px;
@@ -84,6 +85,7 @@
     <button id="fullscreen-game" type="button" hidden>Full screen</button>
     <div id="menu">
       <h1>1v1me</h1>
+      <p id="version"></p>
       <div id="main">
         <div id="champions" role="radiogroup" aria-label="Champion"></div>
         <button data-mode="duel">Find a duel<small>Online 1v1 — open two tabs to test</small></button>

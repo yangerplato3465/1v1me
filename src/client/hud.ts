@@ -2,6 +2,7 @@ import { Container, Graphics, Text } from 'pixi.js';
 import { clamp } from '../sim/math';
 import { ABILITY_SLOTS, BASIC_MAX_RANK, CS_TO_WIN, SUMMONERS, SUMMONER_SLOTS, type SummonerSlot, MAX_LEVEL, ULTIMATE_MAX_RANK, XP_FOR_LEVEL, atRank, type AbilityDef, type AbilitySlot } from '../sim/defs';
 import { attackSpeedOf, canRankUp, shieldOf, type Unit } from '../sim/world';
+import { VERSION } from '../net/version';
 import { COLORS, FONT, MONO, SUMMONER_COLORS } from './theme';
 
 export interface HudInfo {
@@ -336,7 +337,7 @@ export class Hud {
     this.attackState.text = `Auto attack · ${attackSpeed.toFixed(2)}/s · ${state}${passive}`;
     this.attackState.position.set(bx, by - 21);
 
-    this.info.text = `${info.status}\n${Math.round(info.fps)} fps · sim ${info.tickRate} Hz · camera ${info.cameraLocked ? 'locked' : 'free'}`;
+    this.info.text = `${info.status}\n${Math.round(info.fps)} fps · sim ${info.tickRate} Hz · camera ${info.cameraLocked ? 'locked' : 'free'} · v${VERSION}`;
     this.info.position.set(screenW - 16, 14);
     this.score.text = `You ${info.kills}  —  ${info.deaths} Enemy`;
     this.score.position.set(screenW / 2, 12);
