@@ -22,6 +22,7 @@ export class Controls {
   /** Space or F1 held: the camera follows your champion until released, like LoL. */
   spaceHeld = false;
   private selfHeld = false;
+  private backquoteHeld = false;
   hoverId: number | null = null;
   private rightHeld = false;
   private repeatIn = 0;
@@ -63,6 +64,7 @@ export class Controls {
       this.aiming = null;
       this.spaceHeld = false;
       this.selfHeld = false;
+      this.backquoteHeld = false;
       this.arrows.clear();
       this.dragFrom = null;
     });
@@ -70,6 +72,11 @@ export class Controls {
 
   get mouseWorld(): Vec {
     return this.camera.screenToWorld(this.mouse);
+  }
+
+  /** LoL's "target champions only" key (default `) held: clicks and attack-moves ignore minions and turrets. */
+  get championsOnly(): boolean {
+    return this.backquoteHeld;
   }
 
   /** Space or F1 held: follow your champion. */
@@ -136,7 +143,14 @@ export class Controls {
       this.attackMoveArmed = false;
       const target = this.pickEnemy();
       if (target) this.send({ type: 'attack', targetId: target.id });
-      else this.send({ type: 'attackMove', target: this.mouseWorld });
+      else {
+        this.send({
+          type: 'attackMove',
+          target: this.mouseWorld,
+          onCursor: this.settings.attackMoveOnCursor,
+          championsOnly: this.championsOnly,
+        });
+      }
       this.onMarker(target?.pos ?? this.mouseWorld, 'attack');
     }
   }
@@ -171,6 +185,9 @@ export class Controls {
       case 'F1':
         this.selfHeld = true;
         break;
+      case 'Backquote':
+        this.backquoteHeld = true;
+        break;
       case 'KeyY':
         this.camera.locked = !this.camera.locked;
         break;
@@ -203,6 +220,7 @@ export class Controls {
     if (slot && this.aiming === slot && castModeFor(this.settings, slot) === 'quickIndicator') this.cast(slot);
     if (e.code === 'Space') this.spaceHeld = false;
     if (e.code === 'F1') this.selfHeld = false;
+    if (e.code === 'Backquote') this.backquoteHeld = false;
     this.arrows.delete(e.code);
   }
 
@@ -225,6 +243,7 @@ export class Controls {
     let bestDist = Infinity;
     for (const u of this.view.units.values()) {
       if (u.team === player.team || !this.view.isAlive(u)) continue;
+      if (this.championsOnly && u.def.kind && u.def.kind !== 'champion') continue;
       const s = this.camera.worldToScreen(u.pos);
       const r = bodyRadius(u.def) * this.camera.zoom;
       const dx = Math.abs(this.mouse.x - s.x);

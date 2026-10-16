@@ -76,10 +76,12 @@ describe('cast modes', () => {
 describe('settings storage', () => {
   it('round-trips and falls back to defaults for junk', () => {
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
-    saveSettings({ champion: 'shadeblade', castMode: 'quick', slotCastModes: { Q: 'normal', W: null, E: null, R: null }, cameraLocked: true, cameraLockMode: 'fixed' });
+    saveSettings({ champion: 'shadeblade', castMode: 'quick', slotCastModes: { Q: 'normal', W: null, E: null, R: null }, cameraLocked: true, cameraLockMode: 'fixed', autoAttack: false, attackMoveOnCursor: true });
     const loaded = loadSettings();
     expect(loaded.cameraLocked).toBe(true);
     expect(loaded.cameraLockMode).toBe('fixed');
+    expect(loaded.autoAttack).toBe(false);
+    expect(loaded.attackMoveOnCursor).toBe(true);
     expect(castModeFor(loaded, 'Q')).toBe('normal');
     expect(castModeFor(loaded, 'W')).toBe('quick');
     expect(loaded.champion).toBe('shadeblade');

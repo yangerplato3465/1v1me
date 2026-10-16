@@ -25,6 +25,10 @@ export interface Settings {
   cameraLocked: boolean;
   /** LoL's "Camera Lock Mode": offset toward the enemy side, or your champion dead center. */
   cameraLockMode: CameraLockMode;
+  /** LoL's "Auto Attack": when idle, attack enemies that come into range. */
+  autoAttack: boolean;
+  /** LoL's "Attack Move on Cursor": A-click targets the enemy nearest the cursor first. */
+  attackMoveOnCursor: boolean;
 }
 
 export type CameraLockMode = 'perSide' | 'fixed';
@@ -37,6 +41,8 @@ export const DEFAULT_SETTINGS: Settings = {
   slotCastModes: { Q: null, W: null, E: null, R: null },
   cameraLocked: false,
   cameraLockMode: 'perSide',
+  autoAttack: true,
+  attackMoveOnCursor: false,
 };
 
 const isCastMode = (v: unknown): v is CastMode => CAST_MODES.some((m) => m.value === v);
@@ -62,7 +68,16 @@ export function loadSettings(): Settings {
   const champion = PLAYABLE.some((c) => c.id === saved.champion) ? saved.champion! : DEFAULT_SETTINGS.champion;
   const cameraLocked = typeof saved.cameraLocked === 'boolean' ? saved.cameraLocked : DEFAULT_SETTINGS.cameraLocked;
   const cameraLockMode = saved.cameraLockMode === 'fixed' || saved.cameraLockMode === 'perSide' ? saved.cameraLockMode : DEFAULT_SETTINGS.cameraLockMode;
-  return { champion, castMode: isCastMode(saved.castMode) ? saved.castMode : DEFAULT_SETTINGS.castMode, slotCastModes, cameraLocked, cameraLockMode };
+  const flag = (key: 'autoAttack' | 'attackMoveOnCursor') => (typeof saved[key] === 'boolean' ? saved[key] : DEFAULT_SETTINGS[key]);
+  return {
+    champion,
+    castMode: isCastMode(saved.castMode) ? saved.castMode : DEFAULT_SETTINGS.castMode,
+    slotCastModes,
+    cameraLocked,
+    cameraLockMode,
+    autoAttack: flag('autoAttack'),
+    attackMoveOnCursor: flag('attackMoveOnCursor'),
+  };
 }
 
 export function saveSettings(settings: Settings): void {

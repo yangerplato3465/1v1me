@@ -77,10 +77,14 @@
           <option value="locked">Locked to champion</option>
         </select></label>
         <label>Camera lock mode <select id="camera-lock-mode">
-          <option value="perSide">Per-side offset (see more of the enemy side)</option>
-          <option value="fixed">Fixed (champion in the center)</option>
+          <option value="perSide">Per-side offset</option>
+          <option value="fixed">Fixed (centered)</option>
         </select></label>
-        <p class="hint">Hold Space or F1 to follow your champion. Pan with the screen edges, arrow keys or by dragging with the middle mouse button.</p>
+        <label>Auto attack <input type="checkbox" id="auto-attack" /></label>
+        <p class="hint">When idle, attack enemies that come into range. S (stop) pauses it until your next order.</p>
+        <label>Attack move on cursor <input type="checkbox" id="attack-move-cursor" /></label>
+        <p class="hint">A + click targets the enemy nearest the cursor first, instead of nearest your champion. Hold ` to target champions only.</p>
+        <p class="hint">Per-side offset shows more of the enemy side when locked. Hold Space or F1 to follow your champion. Pan with the screen edges, arrow keys or by dragging with the middle mouse button.</p>
         <div class="actions">
           <button type="button" class="secondary" id="settings-back">Back</button>
           <button type="submit">Save</button>

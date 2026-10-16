@@ -47,6 +47,9 @@ export interface OwnState {
   /** Server tick whose step first simulated with that command. */
   ackTick: number;
   order: Order;
+  postponed: Unit['postponed'];
+  autoAttack: boolean;
+  holdPosition: boolean;
 }
 
 export interface UnitSnapshot {
@@ -134,6 +137,9 @@ export function fromUnitSnapshot(s: UnitSnapshot): Unit {
     cooldowns: s.cooldowns,
     statuses: s.statuses,
     respawnIn: s.respawnIn,
+    postponed: null,
+    autoAttack: false,
+    holdPosition: false,
   };
 }
 
@@ -148,8 +154,13 @@ export function parsePlayerCommand(raw: unknown): PlayerCommand | null {
   const m = raw as Record<string, unknown>;
   switch (m.type) {
     case 'move':
+      return isVec(m.target) ? { type: 'move', target: { x: m.target.x, y: m.target.y } } : null;
     case 'attackMove':
-      return isVec(m.target) ? { type: m.type, target: { x: m.target.x, y: m.target.y } } : null;
+      return isVec(m.target)
+        ? { type: 'attackMove', target: { x: m.target.x, y: m.target.y }, onCursor: m.onCursor === true, championsOnly: m.championsOnly === true }
+        : null;
+    case 'autoAttack':
+      return typeof m.enabled === 'boolean' ? { type: 'autoAttack', enabled: m.enabled } : null;
     case 'attack':
       return isNum(m.targetId) ? { type: 'attack', targetId: m.targetId } : null;
     case 'cast':

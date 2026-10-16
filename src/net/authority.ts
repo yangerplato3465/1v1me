@@ -49,6 +49,7 @@ export class Authority {
     if (practice && !this.bot) {
       const botTeam: Team = team === 'blue' ? 'red' : 'blue';
       const botUnit = this.world.addUnit(WAYFINDER, botTeam, FOUNTAINS[botTeam], progression);
+      botUnit.autoAttack = true;
       this.bot = new PracticeBot(this.world, botUnit.id, unit.id);
     }
     if (this.bot || this.seats.size >= 2) this.started = true;
@@ -91,6 +92,7 @@ export class Authority {
     const seat = this.seats.get(seatId);
     const unit = seat && this.world.units.get(seat.unitId);
     if (!seat || !unit) return shared;
-    return { ...shared, you: { ack: seat.lastSeq, ackTick: seat.lastSeqTick, order: unit.order } };
+    const { order, postponed, autoAttack, holdPosition } = unit;
+    return { ...shared, you: { ack: seat.lastSeq, ackTick: seat.lastSeqTick, order, postponed, autoAttack, holdPosition } };
   }
 }

@@ -26,9 +26,10 @@ port 2568), and `PORT` to change the server port.
 | Input | Action |
 |---|---|
 | Right-click | Move, or attack an enemy under the cursor. Hold to keep moving toward the cursor |
-| A + left-click | Attack-move |
+| A + left-click | Attack-move: attacks the enemy nearest your champion, or walks there attacking whatever comes into range (Settings → "Attack move on cursor" targets near the cursor first) |
+| ` (hold) | Target champions only: clicks and attack-moves ignore minions and turrets |
 | Q W E R | Cast, per your cast mode (see Settings). Right-click while aiming cancels |
-| S | Stop |
+| S | Stop, and pause auto-attack until your next order |
 | Ctrl/Alt + Q W E R, or click **+** | Spend a skill point on that ability. Browsers keep Ctrl+W for closing the tab, so Alt works too; in full screen (Chrome/Edge) Ctrl+W reaches the game |
 | **Full screen** button (menu, or bottom-right in game) | Toggle full screen. In Chrome/Edge it also captures the keyboard, so hold Esc to leave |
 | Space (or F1) | Center on your champion; hold to keep following it, release to free the camera again |
@@ -138,6 +139,30 @@ outer turret, and minion waves. The rules follow LoL (minute-0 numbers from the 
   on a champion who blocks their path, unit collision between champions and minions
   (champions walk through them), experience and levels, inner turrets, inhibitor and
   nexus (there's no win condition yet), recall, and the fountain laser.
+
+## Input feel
+
+Things LoL does that make its controls feel responsive, from Riot's "The Art of Spell
+Casting" tech blog (parts 1 and 2), Riot's patch 8.9 notes on input buffering, and the
+LoL wiki's Basic attack and Cast time pages:
+
+- **Postponed spells (input buffering).** A spell pressed while another is still casting
+  (or during a dash), or in the last moments of its own cooldown, is held and goes off
+  the moment it can. A newer press replaces it (Riot's example: E, W, Q casts E then Q),
+  and a move, attack or stop clears it. Riot gives no exact window; queued spells last
+  0.4 s here (`SPELL_BUFFER_SECONDS` in `src/sim/world.ts`).
+- **Move-to-cast.** A unit-targeted ability (Final Mark) clicked on an enemy champion out
+  of range walks you into range and then casts. Ground-targeted abilities clamp to max
+  range, as LoL's do by default.
+- **Auto attack.** LoL's default setting: an idle champion attacks the nearest enemy that
+  comes into its attack range, without chasing it out. Stop (S) pauses it until your
+  next order. Settings → "Auto attack" turns it off.
+- **Attack-move targeting.** A-click scans for the enemy nearest your *champion* (LoL's
+  default), or first near the cursor with "Attack move on cursor". Clicking directly on
+  an enemy always attacks it.
+- **Already in place:** the one-tick grace at the end of an attack windup, walking into
+  range on an attack order, casts that root you but keep your move order for afterwards,
+  and prediction of all of the above online.
 
 ## Levels and abilities
 

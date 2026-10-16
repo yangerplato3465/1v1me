@@ -50,8 +50,11 @@ export type Team = 'blue' | 'red';
 export type Order =
   | { kind: 'idle' }
   | { kind: 'move'; target: Vec }
-  | { kind: 'attack'; targetId: number }
-  | { kind: 'attackMove'; target: Vec };
+  /** `auto`: picked up by auto-attack while idle; it isn't chased out of range. */
+  | { kind: 'attack'; targetId: number; auto?: boolean }
+  | { kind: 'attackMove'; target: Vec; championsOnly?: boolean }
+  /** Walking into range of a unit-targeted ability, to cast it on arrival (LoL's move-to-cast). */
+  | { kind: 'castMove'; slot: AbilitySlot; targetId: number };
 
 /** Timed effects on a unit. */
 export type Status =
@@ -127,6 +130,12 @@ export interface Unit {
   statuses: Status[];
   /** > 0 while dead. */
   respawnIn: number;
+  /** A spell pressed while it couldn't be cast yet, cast as soon as it can be (LoL's "postponed spell"). */
+  postponed: { slot: AbilitySlot; target: Vec; remaining: number } | null;
+  /** LoL's "Auto Attack" setting: when idle, attack enemies that come into range. */
+  autoAttack: boolean;
+  /** Set by Stop: auto-attack waits until the next order, like LoL. */
+  holdPosition: boolean;
 }
 
 /** A champion's shadow: it dashes into place, copies mimicked abilities, and can be swapped with once. */
@@ -149,9 +158,14 @@ export interface Shadow {
 export type PlayerCommand =
   | { type: 'move'; target: Vec }
   | { type: 'attack'; targetId: number }
-  | { type: 'attackMove'; target: Vec }
+  /**
+   * `onCursor`: look for a target around the cursor first (LoL's "Attack Move on Cursor"),
+   * then around the champion. `championsOnly`: LoL's "target champions only" key.
+   */
+  | { type: 'attackMove'; target: Vec; onCursor?: boolean; championsOnly?: boolean }
   | { type: 'cast'; slot: AbilitySlot; target: Vec }
   | { type: 'levelUp'; slot: AbilitySlot }
+  | { type: 'autoAttack'; enabled: boolean }
   | { type: 'stop' };
 
 export type Command = PlayerCommand & { unitId: number };
@@ -238,8 +252,13 @@ export interface WorldOptions {
  */
 const WINDUP_GRACE = 1 / TICK_RATE + 1e-9;
 
-/** An A-click this close to an enemy's edge targets that enemy directly. */
+/** With "attack move on cursor", an A-click this close to an enemy's edge targets that enemy. */
 const ATTACK_MOVE_SNAP = 200;
+/**
+ * How long a spell pressed too early stays queued: during another cast or dash, or in the
+ * last moments of its cooldown. Riot says only "a set duration"; this is an estimate.
+ */
+export const SPELL_BUFFER_SECONDS = 0.4;
 /** A unit-targeted cast picks the enemy nearest the cursor within this distance of it. */
 const TARGET_PICK_RADIUS = 250;
 /** Cooldown left on a death mark whose target died before the dash. */
@@ -370,6 +389,9 @@ export class World {
       cooldowns: noCooldowns(),
       statuses: [],
       respawnIn: 0,
+      postponed: null,
+      autoAttack: false,
+      holdPosition: false,
     };
     this.units.set(unit.id, unit);
     return unit;
@@ -416,7 +438,7 @@ export class World {
   issue(cmd: Command): void {
     const u = this.units.get(cmd.unitId);
     if (!u) return;
-    // Skill points can be spent while dead, as in LoL.
+    // Skill points and settings can be changed while dead, as in LoL.
     if (cmd.type === 'levelUp') {
       if (canRankUp(u, cmd.slot)) {
         u.ranks[cmd.slot]++;
@@ -424,7 +446,16 @@ export class World {
       }
       return;
     }
+    if (cmd.type === 'autoAttack') {
+      u.autoAttack = cmd.enabled;
+      return;
+    }
     if (!this.isAlive(u)) return;
+    if (cmd.type !== 'cast') {
+      // A new order clears a queued spell, and only Stop holds back auto-attacks.
+      u.postponed = null;
+      u.holdPosition = cmd.type === 'stop';
+    }
     switch (cmd.type) {
       case 'move':
         this.setOrder(u, { kind: 'move', target: clampToWorld(cmd.target) });
@@ -437,10 +468,16 @@ export class World {
         break;
       }
       case 'attackMove': {
-        const target = this.nearestEnemy(u, cmd.target, ATTACK_MOVE_SNAP);
+        // LoL scans for the enemy nearest the champion (or first near the cursor, with that option on).
+        const only = cmd.championsOnly ? isChampion : undefined;
+        const target =
+          (cmd.onCursor ? this.nearestEnemy(u, cmd.target, ATTACK_MOVE_SNAP, only) : null) ??
+          this.nearestEnemy(u, u.pos, u.def.attackRange + u.def.radius, only);
         this.setOrder(
           u,
-          target ? { kind: 'attack', targetId: target.id } : { kind: 'attackMove', target: clampToWorld(cmd.target) },
+          target
+            ? { kind: 'attack', targetId: target.id }
+            : { kind: 'attackMove', target: clampToWorld(cmd.target), championsOnly: cmd.championsOnly },
         );
         break;
       }
@@ -488,18 +525,36 @@ export class World {
     this.events.push({ type: 'attackCanceled', unitId: u.id });
   }
 
-  private cast(u: Unit, slot: AbilitySlot, target: Vec): void {
+  /**
+   * Casts if it can. Pressed during another cast or dash, or in the last moments of its
+   * cooldown, the spell is postponed and goes off as soon as it can (a newer press replaces
+   * it, and other orders clear it). Returns whether it cast, or started walking to cast.
+   */
+  private cast(u: Unit, slot: AbilitySlot, target: Vec, fromBuffer = false): boolean {
     const ability = u.def.abilities[slot];
     const rank = u.ranks[slot];
-    if (!ability || rank <= 0 || u.cast || u.dash) return;
-    if (this.trySwapRecast(u, slot, ability)) return;
+    if (!ability || rank <= 0) return false;
+    const busy = !!u.cast || !!u.dash;
+    const almostReady = u.cooldowns[slot] > 0 && u.cooldowns[slot] <= SPELL_BUFFER_SECONDS && !this.hasRecast(u, slot, ability);
+    if (busy || almostReady) {
+      if (!fromBuffer) u.postponed = { slot, target: { ...target }, remaining: SPELL_BUFFER_SECONDS };
+      return false;
+    }
+    if (!fromBuffer) u.postponed = null;
+    if (this.trySwapRecast(u, slot, ability)) return true;
     const cost = atRank(ability.manaCost, rank);
-    if (u.cooldowns[slot] > 0 || u.mana < cost) return;
+    if (u.cooldowns[slot] > 0 || u.mana < cost) return false;
 
     let targetId: number | null = null;
     if (ability.kind === 'deathMark') {
       const victim = this.pickDeathMarkTarget(u, ability, target);
-      if (!victim) return;
+      if (!victim) {
+        // An enemy champion near the cursor but out of range: walk up to it, then cast.
+        const outOfRange = this.pickDeathMarkTarget(u, ability, target, Infinity);
+        if (!outOfRange) return false;
+        this.setOrder(u, { kind: 'castMove', slot, targetId: outOfRange.id });
+        return true;
+      }
       targetId = victim.id;
     }
 
@@ -518,6 +573,13 @@ export class World {
     }
     // Abilities without a cast time happen at once and never root.
     if (ability.castTime <= 0) this.finishCast(u);
+    return true;
+  }
+
+  /** Whether casting this slot now would be a swap recast (those aren't blocked by cooldown). */
+  private hasRecast(u: Unit, slot: AbilitySlot, ability: AbilityDef): boolean {
+    if (ability.kind !== 'shadow' && ability.kind !== 'deathMark') return false;
+    return this.shadows.some((s) => s.ownerId === u.id && s.slot === slot && !s.swapped);
   }
 
   /** Recasting a shadow ability swaps places with its shadow, once. */
@@ -537,12 +599,12 @@ export class World {
     return true;
   }
 
-  private pickDeathMarkTarget(u: Unit, ability: DeathMarkAbility, point: Vec): Unit | null {
+  private pickDeathMarkTarget(u: Unit, ability: DeathMarkAbility, point: Vec, range = ability.range): Unit | null {
     let best: Unit | null = null;
     let bestDist = Infinity;
     for (const other of this.units.values()) {
       if (other.team === u.team || !isChampion(other) || !this.isTargetable(other)) continue;
-      if (dist(u.pos, other.pos) > ability.range + other.def.radius) continue;
+      if (dist(u.pos, other.pos) > range + other.def.radius) continue;
       const d = dist(point, other.pos);
       if (d <= TARGET_PICK_RADIUS + other.def.radius && d < bestDist) {
         best = other;
@@ -568,6 +630,7 @@ export class World {
     u.mana = Math.min(maxMana, u.mana + (manaRegen + healing * maxMana) * dt);
     for (const slot of ABILITY_SLOTS) u.cooldowns[slot] = Math.max(0, u.cooldowns[slot] - dt);
     u.attackCooldown = Math.max(0, u.attackCooldown - dt);
+    if (u.postponed && (u.postponed.remaining -= dt) < 0) u.postponed = null;
     this.tickStatuses(u, dt);
     if (!this.isAlive(u)) return; // a detonation can kill
 
@@ -581,6 +644,13 @@ export class World {
     if (u.dash) {
       this.stepDash(u, dt);
       return;
+    }
+
+    // A postponed spell goes off as soon as nothing blocks it, until it expires.
+    if (u.postponed) {
+      const { slot, target } = u.postponed;
+      if (this.cast(u, slot, target, true)) u.postponed = null;
+      if (u.cast || u.dash) return;
     }
 
     if (u.windup) {
@@ -600,6 +670,11 @@ export class World {
 
     switch (u.order.kind) {
       case 'idle':
+        // LoL's auto-attack: an idle champion attacks the nearest enemy that comes into range.
+        if (u.autoAttack && !u.holdPosition) {
+          const target = this.nearestEnemy(u, u.pos, u.def.attackRange + u.def.radius);
+          if (target) u.order = { kind: 'attack', targetId: target.id, auto: true };
+        }
         break;
       case 'move':
         if (this.moveToward(u, u.order.target, dt)) u.order = IDLE;
@@ -613,15 +688,31 @@ export class World {
         } else if (this.inAttackRange(u, target)) {
           u.facing = angleOf(sub(target.pos, u.pos));
           if (u.attackCooldown <= 0) this.startWindup(u, target);
+        } else if (u.order.auto) {
+          u.order = IDLE; // auto-attack doesn't chase
         } else {
           this.moveToward(u, target.pos, dt);
         }
         break;
       }
       case 'attackMove': {
-        const target = this.nearestEnemy(u, u.pos, u.def.attackRange + u.def.radius);
+        const target = this.nearestEnemy(u, u.pos, u.def.attackRange + u.def.radius, u.order.championsOnly ? isChampion : undefined);
         if (target) u.order = { kind: 'attack', targetId: target.id };
         else if (this.moveToward(u, u.order.target, dt)) u.order = IDLE;
+        break;
+      }
+      case 'castMove': {
+        const { slot, targetId } = u.order;
+        const target = this.units.get(targetId);
+        const ability = u.def.abilities[slot];
+        if (!target || !this.isTargetable(target) || ability?.kind !== 'deathMark') {
+          u.order = IDLE;
+        } else if (dist(u.pos, target.pos) <= ability.range + target.def.radius) {
+          u.order = IDLE;
+          this.cast(u, slot, target.pos);
+        } else {
+          this.moveToward(u, target.pos, dt);
+        }
         break;
       }
     }
@@ -927,14 +1018,16 @@ export class World {
     u.cooldowns = noCooldowns();
     u.statuses = [];
     u.dash = null;
+    u.postponed = null;
+    u.holdPosition = false;
     this.events.push({ type: 'respawn', unitId: u.id });
   }
 
-  private nearestEnemy(u: Unit, point: Vec, maxEdgeDist: number): Unit | null {
+  private nearestEnemy(u: Unit, point: Vec, maxEdgeDist: number, only?: (other: Unit) => boolean): Unit | null {
     let best: Unit | null = null;
     let bestDist = Infinity;
     for (const other of this.units.values()) {
-      if (other.team === u.team || !this.isTargetable(other)) continue;
+      if (other.team === u.team || !this.isTargetable(other) || (only && !only(other))) continue;
       const d = dist(point, other.pos) - other.def.radius;
       if (d <= maxEdgeDist && d < bestDist) {
         best = other;

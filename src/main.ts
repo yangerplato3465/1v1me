@@ -61,6 +61,7 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
 
   const camera = new Camera(session.view.units.get(session.playerId)?.pos ?? { x: WORLD_SIZE.width / 2, y: LANE_Y });
   camera.locked = settings.cameraLocked;
+  session.send({ type: 'autoAttack', enabled: settings.autoAttack });
   /** Set once your champion first appears (online, that's after the first snapshot). */
   let framed = false;
   const controls = new Controls(
@@ -143,6 +144,8 @@ function setupSettings(settings: Settings): void {
   const fallback = document.getElementById('cast-default') as HTMLSelectElement;
   const cameraMode = document.getElementById('camera-mode') as HTMLSelectElement;
   const cameraLockMode = document.getElementById('camera-lock-mode') as HTMLSelectElement;
+  const autoAttack = document.getElementById('auto-attack') as HTMLInputElement;
+  const attackMoveCursor = document.getElementById('attack-move-cursor') as HTMLInputElement;
   const hint = document.getElementById('cast-hint')!;
   const perSlot = [...form.querySelectorAll<HTMLSelectElement>('select[data-slot]')];
   const option = (value: string, label: string) => new Option(label, value);
@@ -157,6 +160,8 @@ function setupSettings(settings: Settings): void {
     fallback.value = settings.castMode;
     cameraMode.value = settings.cameraLocked ? 'locked' : 'free';
     cameraLockMode.value = settings.cameraLockMode;
+    autoAttack.checked = settings.autoAttack;
+    attackMoveCursor.checked = settings.attackMoveOnCursor;
     for (const select of perSlot) select.value = settings.slotCastModes[select.dataset.slot as keyof Settings['slotCastModes']] ?? '';
     showHint();
   };
@@ -172,6 +177,8 @@ function setupSettings(settings: Settings): void {
     settings.castMode = fallback.value as CastMode;
     settings.cameraLocked = cameraMode.value === 'locked';
     settings.cameraLockMode = cameraLockMode.value as CameraLockMode;
+    settings.autoAttack = autoAttack.checked;
+    settings.attackMoveOnCursor = attackMoveCursor.checked;
     for (const select of perSlot) {
       settings.slotCastModes[select.dataset.slot as keyof Settings['slotCastModes']] = (select.value || null) as CastMode | null;
     }

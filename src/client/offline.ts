@@ -27,6 +27,7 @@ export class OfflineSession implements Session {
     const enemy = world.addUnit(WAYFINDER, 'red', FOUNTAINS.red, { level: START_LEVEL });
     this.view = world;
     this.playerId = player.id;
+    enemy.autoAttack = true;
     this.bot = new PracticeBot(world, enemy.id, player.id);
   }
 

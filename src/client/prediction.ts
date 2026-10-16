@@ -140,7 +140,11 @@ export class Predictor {
       }
       world.units.set(unit.id, unit);
     }
-    world.units.get(this.playerId)!.order = structuredClone(s.you.order);
+    const me = world.units.get(this.playerId)!;
+    me.order = structuredClone(s.you.order);
+    me.postponed = structuredClone(s.you.postponed);
+    me.autoAttack = s.you.autoAttack;
+    me.holdPosition = s.you.holdPosition;
     // Your shadows matter for your movement (swaps); others' are just scenery for the renderer.
     world.shadows = structuredClone(s.shadows.filter((sh) => sh.ownerId === this.playerId));
     world.reserveIds(Math.max(0, ...s.units.map((u) => u.id), ...s.shadows.map((sh) => sh.id), ...s.projectiles.map((p) => p.id)));
