@@ -3,6 +3,7 @@ import { PracticeBot } from './bot';
 import {
   CASTER_MINION,
   FOUNTAINS,
+  ITEM_AD,
   MELEE_MINION,
   MINION_SPAWNS,
   OUTER_TURRET,
@@ -337,7 +338,7 @@ describe('champion abilities on the lane', () => {
     const foe = world.addUnit(WAYFINDER, 'red', { x: 4300, y: 750 });
     world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: foe.pos });
     run(0.8);
-    expect(damageTo(events, minion).map((e) => e.amount)).toEqual([98]);
+    expect(damageTo(events, minion).map((e) => e.amount)).toEqual([20 + 1.3 * (60 + ITEM_AD)]); // rank 1: 20 + 130% AD
     expect(damageTo(events, foe)).toHaveLength(0);
 
     world.issue({ type: 'cast', unitId: me.id, slot: 'R', target: foe.pos });

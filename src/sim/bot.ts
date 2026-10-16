@@ -1,4 +1,14 @@
-import { ABILITY_SLOTS, atRank, type AbilityDef, type AbilitySlot } from './defs';
+import {
+  ABILITY_SLOTS,
+  SUMMONERS,
+  SUMMONER_SLOTS,
+  atRank,
+  igniteDamage,
+  type AbilityDef,
+  type AbilitySlot,
+  type SummonerId,
+  type SummonerSlot,
+} from './defs';
 import { add, clamp, dist, len, lerpVec, normalize, scale, sub, type Vec } from './math';
 import { canRankUp, isMinion, isStructure, type PlayerCommand, type Unit, type World } from './world';
 
@@ -12,6 +22,11 @@ export interface BotOptions {
   /** How much of your current velocity it leads its skillshots by (0 = aims where you stand). */
   lead: number;
 }
+
+/** Ezreal's usual pair. */
+export const BOT_SUMMONERS: Record<SummonerSlot, SummonerId> = { D: 'flash', F: 'heal' };
+/** Below this share of health it heals, shields or flashes away. */
+const LOW_HP = 0.3;
 
 export const DEFAULT_BOT: BotOptions = { reaction: 0.25, dodgeChance: 0.6, aimError: 45, lead: 0.7 };
 
@@ -49,6 +64,35 @@ export class PracticeBot {
     private readonly options: BotOptions = DEFAULT_BOT,
   ) {}
 
+  /**
+   * Heal or Barrier when low with the foe close, Flash away when about to die, Ignite a foe
+   * it can burn down (or that is low), Exhaust a foe that is winning the fight.
+   */
+  private useSummoners(me: Unit, foe: Unit): void {
+    const hpShare = me.hp / me.stats.maxHp;
+    const gap = dist(me.pos, foe.pos);
+    for (const slot of SUMMONER_SLOTS) {
+      if (me.summonerCooldowns[slot] > 0) continue;
+      const id = me.summoners[slot];
+      const cast = (target: Vec) => this.issue({ type: 'summoner', slot, target });
+      switch (id) {
+        case 'heal':
+        case 'barrier':
+          if (hpShare < LOW_HP && gap < 900) return cast(me.pos);
+          break;
+        case 'flash':
+          if (hpShare < LOW_HP * 0.6 && gap < 500) return cast(add(me.pos, scale(normalize(sub(me.spawn, me.pos)), 1000)));
+          break;
+        case 'ignite':
+          if (gap <= SUMMONERS.ignite.range && (foe.hp < igniteDamage(me.level) * 1.2 || foe.hp < foe.stats.maxHp * 0.35)) return cast(foe.pos);
+          break;
+        case 'exhaust':
+          if (gap <= SUMMONERS.exhaust.range && hpShare < 0.5 && foe.hp > me.hp) return cast(foe.pos);
+          break;
+      }
+    }
+  }
+
   update(dt: number): void {
     if (this.world.result) return;
     this.time += dt;
@@ -70,6 +114,8 @@ export class PracticeBot {
       else if (dist(me.pos, me.spawn) > 50) this.issue({ type: 'move', target: me.spawn });
       return;
     }
+    // Summoner spells don't interrupt anything, so they never take the bot's turn.
+    this.useSummoners(me, foe);
     if (this.dodge(me)) return;
     if (laning && this.avoidTurret(me)) return;
     const turret = this.enemyTurret(me);

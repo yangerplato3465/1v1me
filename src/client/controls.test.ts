@@ -73,10 +73,23 @@ describe('cast modes', () => {
   });
 });
 
+describe('summoner spells', () => {
+  it('D and F cast their summoner spell at the cursor at once, in any cast mode', () => {
+    const { controls, sent, key } = setup('normal');
+    key('keydown', 'KeyD');
+    key('keydown', 'KeyF');
+    expect(sent).toEqual([
+      { type: 'summoner', slot: 'D', target: controls.mouseWorld },
+      { type: 'summoner', slot: 'F', target: controls.mouseWorld },
+    ]);
+    expect(controls.aiming).toBeNull();
+  });
+});
+
 describe('settings storage', () => {
   it('round-trips and falls back to defaults for junk', () => {
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
-    saveSettings({ champion: 'shadeblade', castMode: 'quick', slotCastModes: { Q: 'normal', W: null, E: null, R: null }, cameraLocked: true, cameraLockMode: 'fixed', autoAttack: false, attackMoveOnCursor: true });
+    saveSettings({ champion: 'shadeblade', castMode: 'quick', slotCastModes: { Q: 'normal', W: null, E: null, R: null }, cameraLocked: true, cameraLockMode: 'fixed', autoAttack: false, attackMoveOnCursor: true, summoners: { D: 'heal', F: 'barrier' } });
     const loaded = loadSettings();
     expect(loaded.cameraLocked).toBe(true);
     expect(loaded.cameraLockMode).toBe('fixed');
@@ -85,6 +98,7 @@ describe('settings storage', () => {
     expect(castModeFor(loaded, 'Q')).toBe('normal');
     expect(castModeFor(loaded, 'W')).toBe('quick');
     expect(loaded.champion).toBe('shadeblade');
+    expect(loaded.summoners).toEqual({ D: 'heal', F: 'barrier' });
 
     localStorage.setItem('1v1me.settings', '{"champion":"marksman","castMode":"turbo","slotCastModes":{"Q":42}}');
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS);

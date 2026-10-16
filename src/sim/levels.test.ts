@@ -4,6 +4,7 @@ import { PracticeBot } from './bot';
 import {
   CASTER_MINION,
   CHAMPION_KILL_XP,
+  ITEM_AD,
   MELEE_MINION,
   SHADEBLADE,
   START_LEVEL,
@@ -39,7 +40,7 @@ describe('starting a match', () => {
     // Level 3 stats on LoL's growth curve: 600 + 102 × 2 × (0.7025 + 0.0175 × 2).
     expect(me.stats.maxHp).toBeCloseTo(750.45, 2);
     expect(me.hp).toBeCloseTo(750.45, 2);
-    expect(me.stats.attackDamage).toBeCloseTo(60 + 3.75 * 2 * 0.7375, 6);
+    expect(me.stats.attackDamage).toBeCloseTo(60 + ITEM_AD + 3.75 * 2 * 0.7375, 6); // Ezreal's 60, plus items
     expect(attackSpeedOf(me)).toBeCloseTo(0.625 * (1 + 0.025 * 2 * 0.7375), 6);
 
     world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: { x: 900, y: 800 } });

@@ -1,4 +1,5 @@
-import { ABILITY_SLOTS, PLAYABLE, type AbilitySlot } from '../sim/defs';
+import { parseSummoners } from '../net/protocol';
+import { ABILITY_SLOTS, DEFAULT_SUMMONERS, PLAYABLE, type AbilitySlot, type SummonerId, type SummonerSlot } from '../sim/defs';
 
 /**
  * LoL's three cast modes:
@@ -29,6 +30,8 @@ export interface Settings {
   autoAttack: boolean;
   /** LoL's "Attack Move on Cursor": A-click targets the enemy nearest the cursor first. */
   attackMoveOnCursor: boolean;
+  /** Summoner spells on D and F; always two different ones. */
+  summoners: Record<SummonerSlot, SummonerId>;
 }
 
 export type CameraLockMode = 'perSide' | 'fixed';
@@ -43,6 +46,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cameraLockMode: 'perSide',
   autoAttack: true,
   attackMoveOnCursor: false,
+  summoners: { ...DEFAULT_SUMMONERS },
 };
 
 const isCastMode = (v: unknown): v is CastMode => CAST_MODES.some((m) => m.value === v);
@@ -77,6 +81,7 @@ export function loadSettings(): Settings {
     cameraLockMode,
     autoAttack: flag('autoAttack'),
     attackMoveOnCursor: flag('attackMoveOnCursor'),
+    summoners: parseSummoners(saved.summoners),
   };
 }
 

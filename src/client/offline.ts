@@ -1,5 +1,5 @@
-import { PracticeBot } from '../sim/bot';
-import { FOUNTAINS, PLAYABLE, START_LEVEL, TICK_RATE, WAYFINDER, type ChampionDef } from '../sim/defs';
+import { BOT_SUMMONERS, PracticeBot } from '../sim/bot';
+import { DEFAULT_SUMMONERS, FOUNTAINS, PLAYABLE, START_LEVEL, TICK_RATE, WAYFINDER, type ChampionDef, type SummonerId, type SummonerSlot } from '../sim/defs';
 import { Lane } from '../sim/lane';
 import { dist, lerpVec, type Vec } from '../sim/math';
 import { World, type PlayerCommand, type Projectile, type Shadow, type SimEvent, type Unit } from '../sim/world';
@@ -20,11 +20,11 @@ export class OfflineSession implements Session {
   private readonly prev = new Map<number, Vec>();
   private acc = 0;
 
-  constructor(champ: ChampionDef = PLAYABLE[0]) {
+  constructor(champ: ChampionDef = PLAYABLE[0], summoners: Record<SummonerSlot, SummonerId> = DEFAULT_SUMMONERS) {
     const world = new World();
     this.lane = new Lane(world);
-    const player = world.addUnit(champ, 'blue', FOUNTAINS.blue, { level: START_LEVEL });
-    const enemy = world.addUnit(WAYFINDER, 'red', FOUNTAINS.red, { level: START_LEVEL });
+    const player = world.addUnit(champ, 'blue', FOUNTAINS.blue, { level: START_LEVEL, summoners });
+    const enemy = world.addUnit(WAYFINDER, 'red', FOUNTAINS.red, { level: START_LEVEL, summoners: BOT_SUMMONERS });
     this.view = world;
     this.playerId = player.id;
     enemy.autoAttack = true;

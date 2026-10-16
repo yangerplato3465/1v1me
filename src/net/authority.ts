@@ -1,5 +1,5 @@
-import { PracticeBot } from '../sim/bot';
-import { FOUNTAINS, PLAYABLE, START_LEVEL, TICK_RATE, WAYFINDER } from '../sim/defs';
+import { BOT_SUMMONERS, PracticeBot } from '../sim/bot';
+import { FOUNTAINS, PLAYABLE, START_LEVEL, TICK_RATE, WAYFINDER, type SummonerId, type SummonerSlot } from '../sim/defs';
 import { Lane } from '../sim/lane';
 import { World, type Team } from '../sim/world';
 import { parseCommandMessage, toUnitSnapshot, type Snapshot, type Welcome } from './protocol';
@@ -38,17 +38,19 @@ export class Authority {
     this.lane = options.lane === false ? null : new Lane(this.world);
   }
 
-  join(seatId: string, practice = false, champ?: string): Welcome {
+  join(seatId: string, practice = false, champ?: string, summoners?: Record<SummonerSlot, SummonerId>): Welcome {
     const taken = new Set([...this.seats.values()].map((s) => s.team));
     const team: Team = taken.has('blue') ? 'red' : 'blue';
     const def = PLAYABLE.find((c) => c.id === champ) ?? PLAYABLE[0];
     const progression = this.lane ? { level: START_LEVEL } : undefined;
     const unit = this.world.addUnit(def, team, FOUNTAINS[team], progression);
+    if (summoners) unit.summoners = { ...summoners };
     this.seats.set(seatId, { unitId: unit.id, team, lastSeq: -1, lastSeqTick: -1 });
 
     if (practice && !this.bot) {
       const botTeam: Team = team === 'blue' ? 'red' : 'blue';
       const botUnit = this.world.addUnit(WAYFINDER, botTeam, FOUNTAINS[botTeam], progression);
+      botUnit.summoners = { ...BOT_SUMMONERS };
       botUnit.autoAttack = true;
       this.bot = new PracticeBot(this.world, botUnit.id, unit.id);
     }

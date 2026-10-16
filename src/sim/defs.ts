@@ -320,6 +320,14 @@ export interface ChampionDef {
   xp?: number;
 }
 
+/**
+ * Attack damage every champion gets on top of its LoL base, standing in for items: there's
+ * no shop, and in LoL you'd have about this much from a Doran's Blade (+10) and a Long
+ * Sword (+10). It makes last-hitting easier. Abilities that scale with attack damage (Arcane
+ * Bolt, Final Mark) count it, as they would items.
+ */
+export const ITEM_AD = 20;
+
 /** The original prototype champion: a plain ranged attacker with one skillshot. */
 export const MARKSMAN: ChampionDef = {
   id: 'marksman',
@@ -334,7 +342,7 @@ export const MARKSMAN: ChampionDef = {
   attackRange: 550,
   attackSpeed: 0.75,
   windupPct: 0.2,
-  attackDamage: 60,
+  attackDamage: 60 + ITEM_AD,
   attackProjectileSpeed: 2000,
   abilities: {
     Q: {
@@ -370,7 +378,7 @@ export const WAYFINDER: ChampionDef = {
   attackRange: 550,
   attackSpeed: 0.625,
   windupPct: 0.18839,
-  attackDamage: 60,
+  attackDamage: 60 + ITEM_AD, // Ezreal's 60, plus items
   attackProjectileSpeed: 2000,
   growth: { maxHp: 102, maxMana: 70, hpRegen: 0.13, manaRegen: 0.2, attackDamage: 3.75, attackSpeed: 0.025 },
   passive: { kind: 'abilityHitAttackSpeed', name: 'Spell Momentum', perStack: 0.1, maxStacks: 5, duration: 6 },
@@ -446,7 +454,7 @@ export const SHADEBLADE: ChampionDef = {
   attackRange: 125,
   attackSpeed: 0.651,
   windupPct: 0.19759,
-  attackDamage: 63,
+  attackDamage: 63 + ITEM_AD, // Zed's 63, plus items
   attackProjectileSpeed: 0,
   growth: { maxHp: 99, maxMana: 0, hpRegen: 0.13, manaRegen: 0, attackDamage: 3.4, attackSpeed: 0.033 },
   passive: {
@@ -624,3 +632,94 @@ export const UNIT_DEFS: Record<string, ChampionDef> = {
 
 /** Champions offered in champion select. */
 export const PLAYABLE = [WAYFINDER, SHADEBLADE];
+
+// --- summoner spells ------------------------------------------------------------
+// Numbers from the LoL wiki pages for each spell (Summoner's Rift values). Unit-targeted
+// spells use LoL's "centered" range: center to center.
+
+export const SUMMONER_SLOTS = ['D', 'F'] as const;
+export type SummonerSlot = (typeof SUMMONER_SLOTS)[number];
+export type SummonerId = 'flash' | 'ignite' | 'exhaust' | 'heal' | 'barrier';
+
+interface SummonerBase {
+  id: SummonerId;
+  name: string;
+  /** Seconds. */
+  cooldown: number;
+  /** One line for the HUD and settings. */
+  blurb: string;
+}
+
+/** Blinks up to 400 toward the cursor (the full 400 if aimed farther). No cast time. */
+export const FLASH = {
+  id: 'flash',
+  name: 'Flash',
+  cooldown: 300,
+  range: 400,
+  blurb: 'blink 400 toward the cursor',
+} as const satisfies SummonerBase & Record<string, unknown>;
+
+/**
+ * True damage over 5 s to an enemy champion, by the caster's level: 70 at level 1, +20 per
+ * level to 150 at 5, then +25 per level (175 at 6, 300 at 11, 475 at 18). It also applies
+ * Grievous Wounds (40% less healing and regeneration) for the duration.
+ */
+export const IGNITE = {
+  id: 'ignite',
+  name: 'Ignite',
+  cooldown: 180,
+  range: 600,
+  duration: 5,
+  /** The wiki: 5 ticks of a fifth each. */
+  ticks: 5,
+  grievousWounds: 0.4,
+  blurb: 'true damage over 5 s + 40% Grievous Wounds',
+} as const satisfies SummonerBase & Record<string, unknown>;
+export const igniteDamage = (level: number): number => (level <= 5 ? 50 + 20 * level : 25 + 25 * level);
+
+/** An enemy champion is slowed 40% and deals 35% less damage (not true damage) for 3 s. */
+export const EXHAUST = {
+  id: 'exhaust',
+  name: 'Exhaust',
+  cooldown: 240,
+  range: 650,
+  slow: 0.4,
+  damageReduction: 0.35,
+  duration: 3,
+  blurb: '40% slow, 35% less damage dealt for 3 s',
+} as const satisfies SummonerBase & Record<string, unknown>;
+
+/**
+ * Restores 80 + 14 per level after the first (80 at 1, 318 at 18) and grants 30% move speed
+ * for 1 s. In LoL it also heals an ally near the cursor; a 1v1 has none.
+ */
+export const HEAL = {
+  id: 'heal',
+  name: 'Heal',
+  cooldown: 240,
+  moveSpeed: 0.3,
+  moveSpeedDuration: 1,
+  blurb: 'heal by level + 30% move speed for 1 s',
+} as const satisfies SummonerBase & Record<string, unknown>;
+export const healAmount = (level: number): number => 80 + 14 * (level - 1);
+
+/** A shield of 100 to 460 by level (linear; the wiki's table) for 2.5 s. */
+export const BARRIER = {
+  id: 'barrier',
+  name: 'Barrier',
+  cooldown: 180,
+  duration: 2.5,
+  blurb: 'shield by level for 2.5 s',
+} as const satisfies SummonerBase & Record<string, unknown>;
+export const barrierShield = (level: number): number => 100 + (360 / 17) * (level - 1);
+
+export const SUMMONERS = {
+  flash: FLASH,
+  ignite: IGNITE,
+  exhaust: EXHAUST,
+  heal: HEAL,
+  barrier: BARRIER,
+} satisfies Record<SummonerId, SummonerBase>;
+export const SUMMONER_IDS = Object.keys(SUMMONERS) as SummonerId[];
+/** Flash on D and Ignite on F unless changed in the settings. */
+export const DEFAULT_SUMMONERS: Record<SummonerSlot, SummonerId> = { D: 'flash', F: 'ignite' };

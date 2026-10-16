@@ -6,6 +6,17 @@ import {
   CHAMPION_KILL_XP,
   CHAMPION_XP_RANGE,
   CS_TO_WIN,
+  DEFAULT_SUMMONERS,
+  BARRIER,
+  EXHAUST,
+  FLASH,
+  HEAL,
+  IGNITE,
+  SUMMONERS,
+  SUMMONER_SLOTS,
+  barrierShield,
+  healAmount,
+  igniteDamage,
   MAX_LEVEL,
   MINION_XP_RANGE,
   ULTIMATE_LEVELS,
@@ -27,6 +38,8 @@ import {
   type ChampionDef,
   type DeathMarkAbility,
   type SkillshotAbility,
+  type SummonerId,
+  type SummonerSlot,
   type UnitKind,
   type WinReason,
 } from './defs';
@@ -59,7 +72,9 @@ export type Order =
   | { kind: 'attack'; targetId: number; auto?: boolean }
   | { kind: 'attackMove'; target: Vec; championsOnly?: boolean }
   /** Walking into range of a unit-targeted ability, to cast it on arrival (LoL's move-to-cast). */
-  | { kind: 'castMove'; slot: AbilitySlot; targetId: number };
+  | { kind: 'castMove'; slot: AbilitySlot; targetId: number }
+  /** The same for a unit-targeted summoner spell (Ignite, Exhaust). */
+  | { kind: 'summonerMove'; slot: SummonerSlot; targetId: number };
 
 /** Timed effects on a unit. */
 export type Status =
@@ -68,7 +83,17 @@ export type Status =
   | { kind: 'slow'; amount: number; remaining: number }
   | { kind: 'untargetable'; remaining: number }
   | { kind: 'deathMark'; sourceId: number; remaining: number; stored: number; pct: number; baseDamage: number }
-  | { kind: 'executeCooldown'; sourceId: number; remaining: number };
+  | { kind: 'executeCooldown'; sourceId: number; remaining: number }
+  /** Ignite: true damage every second from its caster. */
+  | { kind: 'burn'; sourceId: number; perTick: number; ticksLeft: number; nextTick: number; remaining: number }
+  /** Less healing and health regeneration, by `amount`. */
+  | { kind: 'grievousWounds'; amount: number; remaining: number }
+  /** Exhaust: deals `amount` less damage (true damage excepted). */
+  | { kind: 'exhausted'; amount: number; remaining: number }
+  /** Absorbs damage before health. */
+  | { kind: 'shield'; amount: number; remaining: number }
+  /** Bonus move speed, as a fraction. */
+  | { kind: 'haste'; amount: number; remaining: number };
 
 /** A unit's stats at its current level. */
 export interface UnitStats {
@@ -141,6 +166,9 @@ export interface Unit {
   autoAttack: boolean;
   /** Set by Stop: auto-attack waits until the next order, like LoL. */
   holdPosition: boolean;
+  /** Summoner spells on D and F, and their cooldowns. */
+  summoners: Record<SummonerSlot, SummonerId>;
+  summonerCooldowns: Record<SummonerSlot, number>;
 }
 
 /** A champion's shadow: it dashes into place, copies mimicked abilities, and can be swapped with once. */
@@ -170,13 +198,16 @@ export type PlayerCommand =
   | { type: 'attackMove'; target: Vec; onCursor?: boolean; championsOnly?: boolean }
   | { type: 'cast'; slot: AbilitySlot; target: Vec }
   | { type: 'levelUp'; slot: AbilitySlot }
+  | { type: 'summoner'; slot: SummonerSlot; target: Vec }
   | { type: 'autoAttack'; enabled: boolean }
   | { type: 'stop' };
 
 export type Command = PlayerCommand & { unitId: number };
 
-/** What dealt a hit: an auto-attack or one of the attacker's ability slots. */
-export type HitSource = 'attack' | AbilitySlot;
+/** What a missile or strike carries: an auto-attack or one of the attacker's ability slots. */
+export type HitBy = 'attack' | AbilitySlot;
+/** What dealt damage: a hit, or Ignite's burn (true damage). */
+export type HitSource = HitBy | 'ignite';
 
 interface ProjectileBase {
   id: number;
@@ -192,7 +223,7 @@ interface ProjectileBase {
 /** Auto-attacks and homing ability bolts: they follow the target and cannot miss. */
 export interface HomingProjectile extends ProjectileBase {
   kind: 'homing';
-  source: HitSource;
+  source: HitBy;
   targetId: number;
 }
 
@@ -240,7 +271,9 @@ export type SimEvent =
   | { type: 'marked'; unitId: number; sourceId: number }
   | { type: 'deathMarked'; unitId: number; sourceId: number }
   | { type: 'skillshotExpired'; pos: Vec; team: Team }
-  | { type: 'gameOver'; winner: Team; reason: WinReason };
+  | { type: 'gameOver'; winner: Team; reason: WinReason }
+  /** A summoner spell went off; `amount` is the health restored or shield given, if any. */
+  | { type: 'summoner'; unitId: number; spell: SummonerId; targetId: number | null; amount: number };
 
 export interface MatchResult {
   winner: Team;
@@ -292,6 +325,7 @@ const noCooldowns = (): Record<AbilitySlot, number> => ({ Q: 0, W: 0, E: 0, R: 0
 /** How a new unit starts: at a level with skill points to spend (a real match), or with everything at rank 1 (a sandbox). */
 export interface Progression {
   level: number;
+  summoners?: Record<SummonerSlot, SummonerId>;
 }
 
 function clampToWorld(p: Vec): Vec {
@@ -308,12 +342,32 @@ export function attackSpeedOf(u: Unit): number {
   return u.def.attackSpeed * (1 + bonus);
 }
 
-/** Move speed after the strongest slow (slows don't stack in LoL). */
+/** Move speed with bonus speed (Heal), then the strongest slow (slows don't stack in LoL). */
 export function moveSpeedOf(u: Unit): number {
   let slow = 0;
-  for (const s of u.statuses) if (s.kind === 'slow') slow = Math.max(slow, s.amount);
-  return u.def.moveSpeed * (1 - slow);
+  let bonus = 0;
+  for (const s of u.statuses) {
+    if (s.kind === 'slow') slow = Math.max(slow, s.amount);
+    if (s.kind === 'haste') bonus += s.amount;
+  }
+  return u.def.moveSpeed * (1 + bonus) * (1 - slow);
 }
+
+/** How much of any healing or health regeneration lands (Grievous Wounds cuts it). */
+export function healingFactor(u: Unit): number {
+  let cut = 0;
+  for (const s of u.statuses) if (s.kind === 'grievousWounds') cut = Math.max(cut, s.amount);
+  return 1 - cut;
+}
+
+/** Shield left on a unit (Barrier). */
+export function shieldOf(u: Unit): number {
+  let total = 0;
+  for (const s of u.statuses) if (s.kind === 'shield') total += s.amount;
+  return total;
+}
+
+const noSummonerCooldowns = (): Record<SummonerSlot, number> => ({ D: 0, F: 0 });
 
 export function isUntargetable(u: Unit): boolean {
   return u.statuses.some((s) => s.kind === 'untargetable');
@@ -415,6 +469,8 @@ export class World {
       postponed: null,
       autoAttack: false,
       holdPosition: false,
+      summoners: { ...(progression?.summoners ?? DEFAULT_SUMMONERS) },
+      summonerCooldowns: noSummonerCooldowns(),
     };
     this.units.set(unit.id, unit);
     return unit;
@@ -474,6 +530,11 @@ export class World {
       return;
     }
     if (!this.isAlive(u)) return;
+    // Summoner spells aren't orders: they keep what you were doing.
+    if (cmd.type === 'summoner') {
+      this.castSummoner(u, cmd.slot, cmd.target);
+      return;
+    }
     if (cmd.type !== 'cast') {
       // A new order clears a queued spell, and only Stop holds back auto-attacks.
       u.postponed = null;
@@ -642,6 +703,101 @@ export class World {
     return best;
   }
 
+  // --- summoner spells ----------------------------------------------------
+
+  /**
+   * Summoner spells go off at once and aren't orders: they work mid-cast and mid-attack
+   * (LoL lets you Flash during a cast time), but not mid-dash. Ignite and Exhaust need an
+   * enemy champion near the cursor; out of range, the champion walks up to it first.
+   * Returns whether it cast, or started walking to cast.
+   */
+  private castSummoner(u: Unit, slot: SummonerSlot, target: Vec): boolean {
+    const id = u.summoners[slot];
+    if (!isChampion(u) || u.summonerCooldowns[slot] > 0 || u.dash) return false;
+    let targetId: number | null = null;
+    let amount = 0;
+    switch (id) {
+      case 'flash': {
+        const from = { ...u.pos };
+        const to = sub(target, u.pos);
+        const d = len(to);
+        if (d > 1e-6) {
+          u.pos = clampToWorld(add(u.pos, scale(to, Math.min(d, FLASH.range) / d)));
+          u.facing = angleOf(to);
+        }
+        this.events.push({ type: 'blink', unitId: u.id, from, to: { ...u.pos } });
+        break;
+      }
+      case 'ignite':
+      case 'exhaust': {
+        const range = SUMMONERS[id].range;
+        const victim = this.pickSummonerTarget(u, target, range);
+        if (!victim) {
+          const far = this.pickSummonerTarget(u, target, Infinity);
+          if (!far) return false;
+          u.postponed = null;
+          u.holdPosition = false;
+          this.setOrder(u, { kind: 'summonerMove', slot, targetId: far.id });
+          return true;
+        }
+        targetId = victim.id;
+        if (!this.authoritative) break;
+        if (id === 'ignite') {
+          const total = igniteDamage(u.level);
+          victim.statuses = victim.statuses.filter((st) => !(st.kind === 'burn' && st.sourceId === u.id));
+          victim.statuses.push({
+            kind: 'burn',
+            sourceId: u.id,
+            perTick: total / IGNITE.ticks,
+            ticksLeft: IGNITE.ticks,
+            nextTick: IGNITE.duration / IGNITE.ticks,
+            remaining: IGNITE.duration,
+          });
+          victim.statuses.push({ kind: 'grievousWounds', amount: IGNITE.grievousWounds, remaining: IGNITE.duration });
+          amount = total;
+        } else {
+          victim.statuses.push({ kind: 'slow', amount: EXHAUST.slow, remaining: EXHAUST.duration });
+          victim.statuses.push({ kind: 'exhausted', amount: EXHAUST.damageReduction, remaining: EXHAUST.duration });
+        }
+        break;
+      }
+      case 'heal': {
+        if (!this.authoritative) break;
+        const before = u.hp;
+        u.hp = Math.min(u.stats.maxHp, u.hp + healAmount(u.level) * healingFactor(u));
+        amount = u.hp - before;
+        u.statuses = u.statuses.filter((st) => st.kind !== 'haste');
+        u.statuses.push({ kind: 'haste', amount: HEAL.moveSpeed, remaining: HEAL.moveSpeedDuration });
+        break;
+      }
+      case 'barrier': {
+        if (!this.authoritative) break;
+        amount = barrierShield(u.level);
+        u.statuses.push({ kind: 'shield', amount, remaining: BARRIER.duration });
+        break;
+      }
+    }
+    u.summonerCooldowns[slot] = SUMMONERS[id].cooldown;
+    this.events.push({ type: 'summoner', unitId: u.id, spell: id, targetId, amount });
+    return true;
+  }
+
+  /** The enemy champion nearest the cursor (within the usual pick radius) and within `range`, center to center. */
+  private pickSummonerTarget(u: Unit, point: Vec, range: number): Unit | null {
+    let best: Unit | null = null;
+    let bestDist = Infinity;
+    for (const other of this.units.values()) {
+      if (other.team === u.team || !isChampion(other) || !this.isTargetable(other)) continue;
+      if (dist(u.pos, other.pos) > range) continue;
+      const d = dist(point, other.pos);
+      if (d <= TARGET_PICK_RADIUS + other.def.radius && d < bestDist) {
+        best = other;
+        bestDist = d;
+      }
+    }
+    return best;
+  }
+
   // --- unit step ----------------------------------------------------------
 
   private stepUnit(u: Unit, dt: number): void {
@@ -656,9 +812,10 @@ export class World {
     const { maxHp, maxMana, hpRegen, manaRegen } = u.stats;
     // Base regeneration lands every half second; the fountain heals smoothly on top.
     const regen = this.regenTick ? REGEN_TICK_SECONDS : 0;
-    u.hp = Math.min(maxHp, u.hp + hpRegen * regen + healing * maxHp * dt);
+    u.hp = Math.min(maxHp, u.hp + (hpRegen * regen + healing * maxHp * dt) * healingFactor(u));
     u.mana = Math.min(maxMana, u.mana + manaRegen * regen + healing * maxMana * dt);
     for (const slot of ABILITY_SLOTS) u.cooldowns[slot] = Math.max(0, u.cooldowns[slot] - dt);
+    for (const slot of SUMMONER_SLOTS) u.summonerCooldowns[slot] = Math.max(0, u.summonerCooldowns[slot] - dt);
     u.attackCooldown = Math.max(0, u.attackCooldown - dt);
     if (u.postponed && (u.postponed.remaining -= dt) < 0) u.postponed = null;
     this.tickStatuses(u, dt);
@@ -745,11 +902,36 @@ export class World {
         }
         break;
       }
+      case 'summonerMove': {
+        const { slot, targetId } = u.order;
+        const target = this.units.get(targetId);
+        const spell = SUMMONERS[u.summoners[slot]];
+        if (!target || !this.isTargetable(target) || !('range' in spell) || u.summonerCooldowns[slot] > 0) {
+          u.order = IDLE;
+        } else if (dist(u.pos, target.pos) <= spell.range) {
+          u.order = IDLE;
+          this.castSummoner(u, slot, target.pos);
+        } else {
+          this.moveToward(u, target.pos, dt);
+        }
+        break;
+      }
     }
   }
 
   private tickStatuses(u: Unit, dt: number): void {
-    for (const s of u.statuses) s.remaining -= dt;
+    // Ignite's burn ticks once a second; its caster gets the kill.
+    for (const s of u.statuses) {
+      if (s.kind !== 'burn') continue;
+      s.nextTick -= dt;
+      if (s.nextTick > 1e-9 || s.ticksLeft <= 0) continue;
+      s.nextTick += IGNITE.duration / IGNITE.ticks;
+      s.ticksLeft--;
+      if (s.ticksLeft <= 0) s.remaining = 0;
+      if (this.authoritative) this.damage(u, s.sourceId, s.perTick, 'ignite', false);
+      if (!this.isAlive(u)) return;
+    }
+    for (const s of u.statuses) if (s.kind !== 'burn') s.remaining -= dt;
     const expired = u.statuses.filter((s) => s.remaining <= 0);
     u.statuses = u.statuses.filter((s) => s.remaining > 0);
     for (const s of expired) {
@@ -855,7 +1037,7 @@ export class World {
     return u.stats.attackDamage * meleeVsTurret;
   }
 
-  private fireHoming(u: Unit, target: Unit, source: HitSource, speed: number, damage: number): void {
+  private fireHoming(u: Unit, target: Unit, source: HitBy, speed: number, damage: number): void {
     const muzzle = add(u.pos, scale(normalize(sub(target.pos, u.pos)), u.def.radius));
     this.projectiles.push({
       kind: 'homing',
@@ -1165,7 +1347,7 @@ export class World {
   // --- hits ---------------------------------------------------------------
 
   /** Resolves one landed attack or ability: damage, passives, marks, then on-hit effects. */
-  private hit(target: Unit, sourceId: number, amount: number, source: HitSource, ctx: HitContext = {}): void {
+  private hit(target: Unit, sourceId: number, amount: number, source: HitBy, ctx: HitContext = {}): void {
     if (!this.isTargetable(target)) return;
     if (source !== 'attack' && isStructure(target)) return;
     const attacker = this.units.get(sourceId);
@@ -1253,11 +1435,26 @@ export class World {
 
   private damage(target: Unit, sourceId: number, amount: number, source: HitSource, detonation: boolean): void {
     if (!this.isAlive(target)) return;
+    // Exhaust: an exhausted unit deals less damage, except true damage (Ignite).
+    const dealer = this.units.get(sourceId);
+    if (dealer && source !== 'ignite') {
+      for (const s of dealer.statuses) if (s.kind === 'exhausted') amount *= 1 - s.amount;
+    }
     // A death mark repeats a share of everything its owner deals during it (not its own detonation).
     if (!(detonation && source === 'R')) {
       for (const s of target.statuses) if (s.kind === 'deathMark' && s.sourceId === sourceId) s.stored += amount;
     }
-    target.hp = Math.max(0, target.hp - amount);
+    // Shields (Barrier) soak it up first.
+    let left = amount;
+    for (const s of target.statuses) {
+      if (s.kind !== 'shield' || left <= 0) continue;
+      const soaked = Math.min(s.amount, left);
+      s.amount -= soaked;
+      left -= soaked;
+      if (s.amount <= 0) s.remaining = 0;
+    }
+    target.statuses = target.statuses.filter((s) => s.kind !== 'shield' || s.amount > 0);
+    target.hp = Math.max(0, target.hp - left);
     this.events.push({ type: 'damage', targetId: target.id, sourceId, amount, source, detonation, pos: { ...target.pos } });
     if (target.hp > 0) return;
     const kind = kindOf(target);

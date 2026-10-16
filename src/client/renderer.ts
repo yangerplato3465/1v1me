@@ -6,6 +6,7 @@ import {
   isMinion,
   isStructure,
   isUntargetable,
+  shieldOf,
   type GameView,
   type Projectile,
   type Shadow,
@@ -15,7 +16,7 @@ import {
 } from '../sim/world';
 import type { Camera } from './camera';
 import type { Controls, MarkerKind } from './controls';
-import { COLORS, FONT, bodyHeight, bodyRadius, hpColor, teamColor, teamLight } from './theme';
+import { COLORS, FONT, SUMMONER_COLORS, bodyHeight, bodyRadius, hpColor, teamColor, teamLight } from './theme';
 
 /** Turret shots fly this much higher than other missiles, from the crystal at the top of the tower. */
 const TURRET_SHOT_LIFT = 270;
@@ -143,6 +144,22 @@ export class Renderer {
         this.sparks.push({ pos: ev.from, color, age: 0 }, { pos: ev.to, color, age: 0 });
         break;
       }
+      case 'summoner': {
+        const u = this.world.units.get(ev.unitId);
+        const target = ev.targetId === null ? undefined : this.world.units.get(ev.targetId);
+        const color = SUMMONER_COLORS[ev.spell];
+        if (u && target) {
+          // Ignite and Exhaust: a quick line from caster to target.
+          this.blinks.push({ from: { ...u.pos }, to: { ...target.pos }, color, age: 0 });
+          this.float(ev.spell === 'ignite' ? 'IGNITE' : 'EXHAUST', target.pos, color, 18);
+        } else if (u && ev.spell === 'heal') {
+          this.float(`+${Math.round(ev.amount)}`, u.pos, color, 24);
+          this.sparks.push({ pos: { ...u.pos }, color, age: 0 });
+        } else if (u && ev.spell === 'barrier') {
+          this.sparks.push({ pos: { ...u.pos }, color, age: 0 });
+        }
+        break;
+      }
       case 'swap': {
         this.blinks.push({ from: ev.from, to: ev.to, color: MARK_COLOR, age: 0 });
         this.sparks.push({ pos: ev.from, color: MARK_COLOR, age: 0 }, { pos: ev.to, color: MARK_COLOR, age: 0 });
@@ -246,6 +263,15 @@ export class Renderer {
         // Tightens as the detonation approaches.
         const r = u.def.radius + 10 + deathMark.remaining * 18;
         g.circle(p.x, p.y, r).stroke({ width: 5, color: DEATH_MARK_COLOR, alpha: 0.6 + 0.4 * pulse });
+      }
+      if (u.statuses.some((st) => st.kind === 'burn')) {
+        g.circle(p.x, p.y, u.def.radius + 8 + pulse * 3).stroke({ width: 4, color: SUMMONER_COLORS.ignite, alpha: 0.5 + 0.4 * pulse });
+      }
+      if (u.statuses.some((st) => st.kind === 'exhausted')) {
+        g.circle(p.x, p.y, u.def.radius + 12).stroke({ width: 5, color: SUMMONER_COLORS.exhaust, alpha: 0.75 });
+      }
+      if (shieldOf(u) > 0) {
+        g.circle(p.x, p.y, u.def.radius + 4).fill({ color: SUMMONER_COLORS.barrier, alpha: 0.15 }).stroke({ width: 4, color: SUMMONER_COLORS.barrier, alpha: 0.85 });
       }
       if (u.statuses.some((st) => st.kind === 'slow')) {
         g.circle(p.x, p.y, u.def.radius + 2).fill({ color: SLOW_COLOR, alpha: 0.18 });
@@ -677,9 +703,13 @@ class UnitView implements View {
     const by = -BAR_GAP_PX - bh - 4;
     b.roundRect(-bw / 2 - 2, by - 2, bw + 4, bh + 8, 3).fill({ color: 0x0b0b0b, alpha: 0.85 });
     const { maxHp, maxMana } = unit.stats;
-    b.rect(-bw / 2, by, (bw * unit.hp) / maxHp, bh).fill(hpColor(false, this.isPlayer));
-    for (let hp = 100; hp < maxHp; hp += 100) {
-      b.rect(-bw / 2 + (bw * hp) / maxHp, by, 1, bh).fill({ color: 0x000000, alpha: 0.5 });
+    // A shield adds a white stretch; past full health the bar shrinks to fit it, like LoL's.
+    const shield = shieldOf(unit);
+    const scaleTo = Math.max(maxHp, unit.hp + shield);
+    b.rect(-bw / 2, by, (bw * unit.hp) / scaleTo, bh).fill(hpColor(false, this.isPlayer));
+    if (shield > 0) b.rect(-bw / 2 + (bw * unit.hp) / scaleTo, by, (bw * shield) / scaleTo, bh).fill(0xf4f1e8);
+    for (let hp = 100; hp < scaleTo; hp += 100) {
+      b.rect(-bw / 2 + (bw * hp) / scaleTo, by, 1, bh).fill({ color: 0x000000, alpha: 0.5 });
     }
     if (maxMana > 0) b.rect(-bw / 2, by + bh + 1, (bw * unit.mana) / maxMana, 3).fill(unit.def.resource === 'energy' ? COLORS.energy : COLORS.mana);
     // Level, in a box at the left end of the bar, like LoL.

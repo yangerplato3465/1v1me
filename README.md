@@ -29,6 +29,7 @@ port 2568), and `PORT` to change the server port.
 | A + left-click | Attack-move: attacks the enemy nearest your champion, or walks there attacking whatever comes into range (Settings → "Attack move on cursor" targets near the cursor first) |
 | ` (hold) | Target champions only: clicks and attack-moves ignore minions and turrets |
 | Q W E R | Cast, per your cast mode (see Settings). Right-click while aiming cancels |
+| D F | Summoner spells (Flash and Ignite by default; pick them in Settings). They cast at the cursor at once; Ignite and Exhaust go on the enemy champion under or nearest the cursor |
 | S | Stop, and pause auto-attack until your next order |
 | Ctrl/Alt + Q W E R, or click **+** | Spend a skill point on that ability. Browsers keep Ctrl+W for closing the tab, so Alt works too; in full screen (Chrome/Edge) Ctrl+W reaches the game |
 | **Full screen** button (menu, or bottom-right in game) | Toggle full screen. In Chrome/Edge it also captures the keyboard, so hold Esc to leave |
@@ -203,6 +204,9 @@ From the official LoL wiki (Experience, Champion ability and Champion statistic 
   As in LoL, it lands in 0.5-second ticks (`REGEN_TICK_SECONDS`) and stops at the max.
   The HUD shows health and mana bars with "current / max" and the regeneration per second
   at the right end, like LoL's; the fountain heals on top of it.
+- **Item AD.** There's no shop, so every champion gets +20 attack damage (`ITEM_AD`) on
+  top of its LoL base, about a Doran's Blade and a Long Sword's worth. It makes last
+  hits easier, and Arcane Bolt and Final Mark scale with it, as they would with items.
 - **Ranks.** Every number that changes by rank on the wiki uses the current rank: damage,
   cooldowns, costs, Shadeblade's slows, energy refund and stored damage. Arcane Bolt
   scales with total attack damage (130%), and Final Mark's detonation adds 100% of it.
@@ -213,10 +217,44 @@ From the official LoL wiki (Experience, Champion ability and Champion statistic 
 - **Tests and sandboxes.** `World.addUnit` without a `progression` gives a level-1
   champion with every ability at rank 1, which the ability tests rely on.
 
+## Summoner spells
+
+Two per champion, on **D** and **F** (Flash + Ignite by default). Settings → "Summoner
+spells" picks them; the two keys always hold different spells. Numbers are from each
+spell's LoL wiki page (Summoner's Rift), and the ones that grow do so with your champion's
+level, as in LoL:
+
+| Spell | Cooldown | Effect |
+|---|---|---|
+| Flash | 300 s | Blink up to 400 toward the cursor (the full 400 if aimed farther). No cast time |
+| Ignite | 180 s | 600 range, enemy champions only. **70 + 20 per level to 150 at level 5, then +25 per level** (175 at 6, 300 at 11, 475 at 18) true damage over 5 s, in 5 one-second ticks. 40% Grievous Wounds for 5 s |
+| Exhaust | 240 s | 650 range, enemy champions only. 40% slow and 35% less damage dealt (not true damage) for 3 s |
+| Heal | 240 s | Restores **80 + 14 per level** after the first (80 to 318), plus 30% move speed for 1 s |
+| Barrier | 180 s | Shield of **100 to 460 by level** (linear) for 2.5 s |
+
+- **How they cast.** They go off at once and aren't orders: they work during a cast time
+  or an attack and keep whatever you were doing, like LoL (where Flash is used mid-cast).
+  They don't work mid-dash (Final Mark). Ignite and Exhaust use LoL's center-to-center
+  range; aimed at a champion out of range, you walk up to it and cast on arrival.
+- **Effects.** Ignite's kill counts as yours (first blood). Grievous Wounds cuts healing
+  and health regeneration, Heal included (Heal doesn't cleanse it). Exhaust doesn't
+  reduce Ignite. A shield soaks damage before health, and shows as a white stretch on
+  health bars (the bar shrinks to fit it past full health, like LoL's). Burning,
+  exhausted and shielded champions get a colored ring.
+- **HUD.** D and F sit right of R, in the spell's color, with their cooldowns.
+- **The bot** takes Flash + Heal (Ezreal's usual pair): it heals when low with you close,
+  flashes away when about to die, and would Ignite a foe it can burn down or Exhaust a
+  foe that is winning, if given those.
+- **Simplified.** Heal only heals yourself (LoL also heals an ally near the cursor; a 1v1
+  has none), and its "recently healed" halving doesn't apply, since its cooldown is
+  longer. There's no summoner spell haste. The wiki doesn't give the exact Ignite tick
+  timing for the first tick; this uses one tick per second starting 1 s after the cast.
+  The wiki's Barrier page lists both 100–460 and 100–502 (to level 20); 460 at 18 matches both.
+
 ## Champion: Wayfinder
 
 The playable champion mirrors **Ezreal's kit** (mechanics and rank-1 numbers from
-the LoL wiki, with 60 AD and no bonus AD/AP). Names and visuals are original, since
+the LoL wiki: Ezreal's 60 base AD plus 20 for items, and no AP). Names and visuals are original, since
 Riot's names and art are theirs. There is no armor or magic resist yet, so physical and
 magic damage are treated the same.
 
@@ -234,7 +272,7 @@ and passive stacks come from the server.
 ## Champion: Shadeblade
 
 A melee assassin whose kit mirrors **Zed's** (rank-1 numbers from the LoL wiki, which grow with rank and level;
-63 AD, no bonus AD). It uses **energy** (200, +10/s) instead of mana.
+Zed's 63 base AD plus 20 for items). It uses **energy** (200, +10/s) instead of mana.
 
 | Key | Ability | What it does |
 |---|---|---|

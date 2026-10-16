@@ -1,4 +1,4 @@
-import type { ChampionDef } from '../sim/defs';
+import type { ChampionDef, SummonerId } from '../sim/defs';
 import type { Team } from '../sim/world';
 
 export const COLORS = {
@@ -17,6 +17,15 @@ export const COLORS = {
   muted: 0x9aa7a0,
   moveMarker: 0x7dff9a,
   attackMarker: 0xff5a5a,
+};
+
+/** Each summoner spell's color, after its LoL icon. */
+export const SUMMONER_COLORS: Record<SummonerId, number> = {
+  flash: 0xf2d16b,
+  ignite: 0xff7a2f,
+  exhaust: 0xb59a5a,
+  heal: 0x46d36b,
+  barrier: 0xe8dcb0,
 };
 
 export const FONT = 'Inter, "Segoe UI", system-ui, sans-serif';

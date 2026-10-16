@@ -1,4 +1,4 @@
-import type { AbilitySlot } from '../sim/defs';
+import type { AbilitySlot, SummonerSlot } from '../sim/defs';
 import type { Vec } from '../sim/math';
 import type { GameView, PlayerCommand, Unit } from '../sim/world';
 import type { Camera } from './camera';
@@ -11,6 +11,7 @@ export type MarkerKind = 'move' | 'attack';
 const MOVE_REPEAT_SECONDS = 0.1;
 
 const SLOT_KEYS: Record<string, AbilitySlot> = { KeyQ: 'Q', KeyW: 'W', KeyE: 'E', KeyR: 'R' };
+const SUMMONER_KEYS: Record<string, SummonerSlot> = { KeyD: 'D', KeyF: 'F' };
 
 /** Turns mouse/keyboard input into player commands, which go to the local sim or the server. */
 export class Controls {
@@ -168,6 +169,14 @@ export class Controls {
     }
     if (slot) {
       if (this.player?.def.abilities[slot]) this.pressSlot(slot);
+      return;
+    }
+    // Summoner spells always quick cast at the cursor, like LoL's default for them.
+    const summoner = SUMMONER_KEYS[e.code];
+    if (summoner) {
+      // Over an enemy's body (often its head, drawn far above its feet), aim at that enemy.
+      const hovered = this.pickEnemy();
+      this.send({ type: 'summoner', slot: summoner, target: hovered ? { ...hovered.pos } : this.mouseWorld });
       return;
     }
     switch (e.code) {

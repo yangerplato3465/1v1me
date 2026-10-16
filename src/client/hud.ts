@@ -1,8 +1,8 @@
 import { Container, Graphics, Text } from 'pixi.js';
 import { clamp } from '../sim/math';
-import { ABILITY_SLOTS, BASIC_MAX_RANK, CS_TO_WIN, MAX_LEVEL, ULTIMATE_MAX_RANK, XP_FOR_LEVEL, atRank, type AbilityDef, type AbilitySlot } from '../sim/defs';
-import { attackSpeedOf, canRankUp, type Unit } from '../sim/world';
-import { COLORS, FONT, MONO } from './theme';
+import { ABILITY_SLOTS, BASIC_MAX_RANK, CS_TO_WIN, SUMMONERS, SUMMONER_SLOTS, type SummonerSlot, MAX_LEVEL, ULTIMATE_MAX_RANK, XP_FOR_LEVEL, atRank, type AbilityDef, type AbilitySlot } from '../sim/defs';
+import { attackSpeedOf, canRankUp, shieldOf, type Unit } from '../sim/world';
+import { COLORS, FONT, MONO, SUMMONER_COLORS } from './theme';
 
 export interface HudInfo {
   fps: number;
@@ -24,6 +24,7 @@ const HELP = [
   'RMB      move / attack  (hold to keep moving)',
   'A + LMB  attack-move',
   'Q W E R  cast (modes below; RMB cancels aiming)',
+  'D F      summoner spells (set in Settings)',
   'S        stop (and pause auto-attack until your next order)',
   '`        hold: target champions only',
   'Ctrl/Alt + Q W E R   level up an ability (or click +); Ctrl+W needs full screen',
@@ -34,7 +35,11 @@ const HELP = [
 
 const SLOT = 64;
 const SLOT_GAP = 10;
-const PANEL_W = 340;
+const PANEL_W = 440;
+const SUMMONER = 48;
+const SUMMONER_GAP = 8;
+/** Space between R and the summoner spells. */
+const GROUP_GAP = 16;
 const PANEL_H = 200;
 const PLUS = 22;
 
@@ -50,6 +55,12 @@ function label(size: number, opts: { color?: number; bold?: boolean; mono?: bool
       lineHeight: size * 1.45,
     },
   });
+}
+
+interface SummonerLabels {
+  key: Text;
+  cooldown: Text;
+  name: Text;
 }
 
 interface SlotLabels {
@@ -78,6 +89,7 @@ export class Hud {
   readonly root = new Container();
   private readonly panel = new Graphics();
   private readonly slots: Record<AbilitySlot, SlotLabels>;
+  private readonly summonerSlots: Record<SummonerSlot, SummonerLabels>;
   private readonly abilityInfo = label(13, { color: COLORS.muted });
   private readonly attackState = label(13);
   private readonly help = label(13, { mono: true, color: 0xd6dcd8 });
@@ -134,6 +146,18 @@ export class Hud {
       slots[slot] = { key, cooldown, plus };
     }
     this.slots = slots;
+    const summonerSlots = {} as Record<SummonerSlot, SummonerLabels>;
+    for (const slot of SUMMONER_SLOTS) {
+      const key = label(12, { bold: true });
+      key.text = slot;
+      const cooldown = label(18, { bold: true });
+      cooldown.anchor.set(0.5);
+      const name = label(10, { color: COLORS.muted });
+      name.anchor.set(0.5, 0);
+      this.root.addChild(key, cooldown, name);
+      summonerSlots[slot] = { key, cooldown, name };
+    }
+    this.summonerSlots = summonerSlots;
   }
 
   update(screenW: number, screenH: number, player: Unit, alive: boolean, info: HudInfo): void {
@@ -161,9 +185,32 @@ export class Hud {
 
     // Ability slots with a top-down cooldown shade; empty slots are dimmed.
     const rowW = ABILITY_SLOTS.length * SLOT + (ABILITY_SLOTS.length - 1) * SLOT_GAP;
+    const groupW = rowW + GROUP_GAP + SUMMONER_SLOTS.length * SUMMONER + (SUMMONER_SLOTS.length - 1) * SUMMONER_GAP;
+    const rowX = px + (PANEL_W - groupW) / 2;
+
+    // Summoner spells right of R, like LoL: the spell's color, dark while on cooldown.
+    SUMMONER_SLOTS.forEach((slot, i) => {
+      const id = player.summoners[slot];
+      const spell = SUMMONERS[id];
+      const sx = rowX + rowW + GROUP_GAP + i * (SUMMONER + SUMMONER_GAP);
+      const sy = py + 12 + (SLOT - SUMMONER) / 2;
+      const cd = player.summonerCooldowns[slot];
+      const color = SUMMONER_COLORS[id];
+      g.roundRect(sx, sy, SUMMONER, SUMMONER, 8)
+        .fill({ color, alpha: cd > 0 ? 0.18 : 0.42 })
+        .stroke({ width: 2, color: cd > 0 ? 0x44515c : color });
+      if (cd > 0) g.rect(sx, sy, SUMMONER, (SUMMONER * cd) / spell.cooldown).fill({ color: 0x000000, alpha: 0.5 });
+      const labels = this.summonerSlots[slot];
+      labels.key.position.set(sx + 5, sy + 2);
+      labels.cooldown.position.set(sx + SUMMONER / 2, sy + SUMMONER / 2 + 2);
+      labels.cooldown.text = cd <= 0 ? '' : cd < 1 ? cd.toFixed(1) : String(Math.ceil(cd));
+      labels.name.text = spell.name;
+      labels.name.position.set(sx + SUMMONER / 2, sy + SUMMONER + 3);
+    });
+
     ABILITY_SLOTS.forEach((slot, i) => {
       const ability = player.def.abilities[slot];
-      const sx = px + (PANEL_W - rowW) / 2 + i * (SLOT + SLOT_GAP);
+      const sx = rowX + i * (SLOT + SLOT_GAP);
       const sy = py + 12;
       const labels = this.slots[slot];
       labels.key.position.set(sx + 6, sy + 3);
@@ -222,9 +269,13 @@ export class Hud {
     const hpH = 16;
     const manaY = hpY + hpH + 3;
     const manaH = 13;
-    const hpFrac = alive ? clamp(player.hp / maxHp, 0, 1) : 0;
+    // A shield shows as a white stretch after the health; past full health the bar shrinks to fit it, like LoL's.
+    const shieldAmount = alive ? shieldOf(player) : 0;
+    const barScale = Math.max(maxHp, (alive ? player.hp : 0) + shieldAmount);
+    const hpFrac = alive ? clamp(player.hp / barScale, 0, 1) : 0;
     g.rect(barX, hpY, barW, hpH).fill(0x0a0f0c).stroke({ width: 1, color: 0x2c3833 });
     g.rect(barX, hpY, barW * hpFrac, hpH).fill(COLORS.hpAlly);
+    if (shieldAmount > 0) g.rect(barX + barW * hpFrac, hpY, (barW * shieldAmount) / barScale, hpH).fill(0xf4f1e8);
     // Rounded like the max, but never 0 while alive.
     this.hpText.text = `${alive ? Math.max(1, Math.round(player.hp)) : 0} / ${Math.round(maxHp)}`;
     this.hpText.position.set(barX + barW / 2, hpY + hpH / 2);

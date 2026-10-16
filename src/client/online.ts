@@ -1,4 +1,5 @@
 import { Client, type Room } from '@colyseus/sdk';
+import type { SummonerId, SummonerSlot } from '../sim/defs';
 import {
   DEFAULT_PORT,
   MSG,
@@ -83,9 +84,15 @@ export class OnlineSession implements Session {
   private serverShadows: Shadow[] = [];
   private calibrateIn = 0;
 
-  static async connect(endpoint: string, practice: boolean, predict = true, champ?: string): Promise<OnlineSession> {
+  static async connect(
+    endpoint: string,
+    practice: boolean,
+    predict = true,
+    champ?: string,
+    summoners?: Record<SummonerSlot, SummonerId>,
+  ): Promise<OnlineSession> {
     const client = new Client(endpoint);
-    const options: JoinOptions = practice ? { practice: true, champ } : { champ };
+    const options: JoinOptions = practice ? { practice: true, champ, summoners } : { champ, summoners };
     const room = practice ? await client.create(ROOM_NAME, options) : await client.joinOrCreate(ROOM_NAME, options);
     const session = new OnlineSession(room, practice, predict);
     await session.welcomed;

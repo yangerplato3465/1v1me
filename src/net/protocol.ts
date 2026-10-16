@@ -1,4 +1,4 @@
-import { ABILITY_SLOTS, UNIT_DEFS, type AbilitySlot } from '../sim/defs';
+import { ABILITY_SLOTS, DEFAULT_SUMMONERS, SUMMONER_IDS, SUMMONER_SLOTS, UNIT_DEFS, type AbilitySlot, type SummonerId, type SummonerSlot } from '../sim/defs';
 import type { Vec } from '../sim/math';
 import { statsAt, type Order, type PlayerCommand, type Projectile, type Shadow, type SimEvent, type Team, type Unit } from '../sim/world';
 
@@ -24,6 +24,8 @@ export interface JoinOptions {
   practice?: boolean;
   /** Champion id from PLAYABLE; anything else falls back to the first. */
   champ?: string;
+  /** Summoner spells on D and F; invalid or duplicate picks fall back to the defaults. */
+  summoners?: Record<SummonerSlot, SummonerId>;
 }
 
 export interface Welcome {
@@ -72,6 +74,8 @@ export interface UnitSnapshot {
   cooldowns: Unit['cooldowns'];
   statuses: Unit['statuses'];
   respawnIn: number;
+  summoners: Unit['summoners'];
+  summonerCooldowns: Unit['summonerCooldowns'];
   /** What a minion or turret is attacking. Champions' orders stay private. */
   targetId?: number;
 }
@@ -107,6 +111,8 @@ export function toUnitSnapshot(u: Unit): UnitSnapshot {
     cooldowns: u.cooldowns,
     statuses: u.statuses,
     respawnIn: u.respawnIn,
+    summoners: u.summoners,
+    summonerCooldowns: u.summonerCooldowns,
     ...(u.def.kind && u.def.kind !== 'champion' && u.order.kind === 'attack' ? { targetId: u.order.targetId } : {}),
   };
 }
@@ -140,6 +146,8 @@ export function fromUnitSnapshot(s: UnitSnapshot): Unit {
     postponed: null,
     autoAttack: false,
     holdPosition: false,
+    summoners: s.summoners,
+    summonerCooldowns: s.summonerCooldowns,
   };
 }
 
@@ -147,6 +155,14 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 const isVec = (v: unknown): v is Vec =>
   typeof v === 'object' && v !== null && isNum((v as Vec).x) && isNum((v as Vec).y);
 const isSlot = (v: unknown): v is AbilitySlot => ABILITY_SLOTS.includes(v as AbilitySlot);
+const isSummonerSlot = (v: unknown): v is SummonerSlot => SUMMONER_SLOTS.includes(v as SummonerSlot);
+const isSummoner = (v: unknown): v is SummonerId => SUMMONER_IDS.includes(v as SummonerId);
+
+/** A valid pair of different summoner spells for D and F, or the defaults. */
+export function parseSummoners(raw: unknown): Record<SummonerSlot, SummonerId> {
+  const m = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  return isSummoner(m.D) && isSummoner(m.F) && m.D !== m.F ? { D: m.D, F: m.F } : { ...DEFAULT_SUMMONERS };
+}
 
 /** Validates an untrusted client message. Returns a clean copy, or null if it is malformed. */
 export function parsePlayerCommand(raw: unknown): PlayerCommand | null {
@@ -169,6 +185,10 @@ export function parsePlayerCommand(raw: unknown): PlayerCommand | null {
         : null;
     case 'levelUp':
       return isSlot(m.slot) ? { type: 'levelUp', slot: m.slot } : null;
+    case 'summoner':
+      return isSummonerSlot(m.slot) && isVec(m.target)
+        ? { type: 'summoner', slot: m.slot, target: { x: m.target.x, y: m.target.y } }
+        : null;
     case 'stop':
       return { type: 'stop' };
     default:

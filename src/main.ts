@@ -9,17 +9,17 @@ import { OnlineSession, defaultServerUrl } from './client/online';
 import { Renderer } from './client/renderer';
 import type { Session } from './client/session';
 import { CAST_MODES, castModeFor, loadSettings, saveSettings, type CameraLockMode, type CastMode, type Settings } from './client/settings';
-import { ABILITY_SLOTS, LANE_Y, PLAYABLE, WORLD_SIZE } from './sim/defs';
+import { ABILITY_SLOTS, LANE_Y, PLAYABLE, SUMMONERS, SUMMONER_IDS, WORLD_SIZE, type SummonerId, type SummonerSlot } from './sim/defs';
 import { isChampion } from './sim/world';
 
 type Mode = 'offline' | 'practice' | 'duel';
 
 async function startSession(mode: Mode, settings: Settings): Promise<Session> {
   const champ = PLAYABLE.find((c) => c.id === settings.champion) ?? PLAYABLE[0];
-  if (mode === 'offline') return new OfflineSession(champ);
+  if (mode === 'offline') return new OfflineSession(champ, settings.summoners);
   // ?predict=0 turns client-side prediction off, to compare against plain interpolation.
   const predict = new URLSearchParams(location.search).get('predict') !== '0';
-  return OnlineSession.connect(defaultServerUrl(), mode === 'practice', predict, champ.id);
+  return OnlineSession.connect(defaultServerUrl(), mode === 'practice', predict, champ.id, settings.summoners);
 }
 
 function setupChampionSelect(settings: Settings): void {
@@ -166,12 +166,27 @@ function setupSettings(settings: Settings): void {
   const attackMoveCursor = document.getElementById('attack-move-cursor') as HTMLInputElement;
   const hint = document.getElementById('cast-hint')!;
   const perSlot = [...form.querySelectorAll<HTMLSelectElement>('select[data-slot]')];
+  const summonerSelects = [...form.querySelectorAll<HTMLSelectElement>('select[data-summoner]')];
+  const summonerHint = document.getElementById('summoner-hint')!;
   const option = (value: string, label: string) => new Option(label, value);
 
   for (const m of CAST_MODES) fallback.add(option(m.value, m.label));
   for (const select of perSlot) {
     select.add(option('', 'Use cast mode'));
     for (const m of CAST_MODES) select.add(option(m.value, m.label));
+  }
+  for (const select of summonerSelects) for (const id of SUMMONER_IDS) select.add(option(id, SUMMONERS[id].name));
+  const showSummoners = () =>
+    (summonerHint.textContent = summonerSelects.map((s) => `${s.dataset.summoner}: ${SUMMONERS[s.value as SummonerId].blurb}`).join(' · '));
+  // The two keys always hold different spells: picking the other key's spell swaps them.
+  const shown = new Map<HTMLSelectElement, string>();
+  for (const select of summonerSelects) {
+    select.addEventListener('change', () => {
+      const other = summonerSelects.find((s) => s !== select)!;
+      if (other.value === select.value) other.value = shown.get(select)!;
+      for (const s of summonerSelects) shown.set(s, s.value);
+      showSummoners();
+    });
   }
   const showHint = () => (hint.textContent = CAST_MODES.find((m) => m.value === fallback.value)!.hint);
   const fill = () => {
@@ -181,7 +196,12 @@ function setupSettings(settings: Settings): void {
     autoAttack.checked = settings.autoAttack;
     attackMoveCursor.checked = settings.attackMoveOnCursor;
     for (const select of perSlot) select.value = settings.slotCastModes[select.dataset.slot as keyof Settings['slotCastModes']] ?? '';
+    for (const select of summonerSelects) {
+      select.value = settings.summoners[select.dataset.summoner as SummonerSlot];
+      shown.set(select, select.value);
+    }
     showHint();
+    showSummoners();
   };
 
   fallback.addEventListener('change', showHint);
@@ -200,6 +220,7 @@ function setupSettings(settings: Settings): void {
     for (const select of perSlot) {
       settings.slotCastModes[select.dataset.slot as keyof Settings['slotCastModes']] = (select.value || null) as CastMode | null;
     }
+    for (const select of summonerSelects) settings.summoners[select.dataset.summoner as SummonerSlot] = select.value as SummonerId;
     saveSettings(settings);
     menu.classList.remove('show-settings');
   });

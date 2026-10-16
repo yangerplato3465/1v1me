@@ -1,6 +1,6 @@
 import { Room, type Client } from '@colyseus/core';
 import { Authority } from '../src/net/authority';
-import { MSG, type JoinOptions } from '../src/net/protocol';
+import { MSG, parseSummoners, type JoinOptions } from '../src/net/protocol';
 import { TICK_RATE } from '../src/sim/defs';
 
 /** One 1v1 match: Colyseus transport around an Authority, which owns the only real World. */
@@ -27,7 +27,7 @@ export class DuelRoom extends Room {
 
   onJoin(client: Client, options: JoinOptions = {}): void {
     const champ = typeof options.champ === 'string' ? options.champ : undefined;
-    client.send(MSG.welcome, this.match.join(client.sessionId, this.practice, champ));
+    client.send(MSG.welcome, this.match.join(client.sessionId, this.practice, champ, parseSummoners(options.summoners)));
   }
 
   onLeave(client: Client): void {
