@@ -30,8 +30,18 @@ port 2568), and `PORT` to change the server port.
 | Q W E R | Cast, per your cast mode (see Settings). Right-click while aiming cancels |
 | S | Stop |
 | Ctrl/Alt + Q W E R, or click **+** | Spend a skill point on that ability (browsers keep Ctrl+W for closing the tab, so Alt works too) |
-| Space | Center the camera on your champion |
-| Y | Lock or unlock the camera (edge-pan when unlocked) |
+| Space (or F1) | Center on your champion; hold to keep following it, release to free the camera again |
+| Y | Lock or unlock the camera |
+| Screen edge, arrow keys, middle-button drag | Pan the free camera |
+
+The camera works like LoL's (Controls and Hotkeys on the LoL wiki). It starts **free** by
+default; Settings → "Camera at start" switches that, like LoL's Default Camera Mode. A
+free camera jumps back to your champion when you respawn ("move camera on revive").
+Locking or following uses LoL's **Per-Side Offset** by default: the view sits a bit toward
+the enemy base (up-right from the blue side, down-left from the red side), so you see
+more of the lane ahead. Settings → "Camera lock mode" → Fixed puts your champion dead
+center instead. The offset is 17% of the screen height (`SIDE_OFFSET` in
+`src/client/camera.ts`); LoL doesn't publish its exact amount.
 
 **Settings** (start page) has LoL's three cast modes, as a default plus per-key overrides,
 saved in the browser:

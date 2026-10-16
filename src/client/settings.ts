@@ -21,7 +21,13 @@ export interface Settings {
   castMode: CastMode;
   /** Per-key overrides; null means "use the default". */
   slotCastModes: Record<AbilitySlot, CastMode | null>;
+  /** LoL's "Default Camera Mode": whether the camera starts locked to your champion. */
+  cameraLocked: boolean;
+  /** LoL's "Camera Lock Mode": offset toward the enemy side, or your champion dead center. */
+  cameraLockMode: CameraLockMode;
 }
+
+export type CameraLockMode = 'perSide' | 'fixed';
 
 const STORAGE_KEY = '1v1me.settings';
 
@@ -29,6 +35,8 @@ export const DEFAULT_SETTINGS: Settings = {
   champion: PLAYABLE[0].id,
   castMode: 'quickIndicator',
   slotCastModes: { Q: null, W: null, E: null, R: null },
+  cameraLocked: false,
+  cameraLockMode: 'perSide',
 };
 
 const isCastMode = (v: unknown): v is CastMode => CAST_MODES.some((m) => m.value === v);
@@ -52,7 +60,9 @@ export function loadSettings(): Settings {
     if (isCastMode(mode)) slotCastModes[slot] = mode;
   }
   const champion = PLAYABLE.some((c) => c.id === saved.champion) ? saved.champion! : DEFAULT_SETTINGS.champion;
-  return { champion, castMode: isCastMode(saved.castMode) ? saved.castMode : DEFAULT_SETTINGS.castMode, slotCastModes };
+  const cameraLocked = typeof saved.cameraLocked === 'boolean' ? saved.cameraLocked : DEFAULT_SETTINGS.cameraLocked;
+  const cameraLockMode = saved.cameraLockMode === 'fixed' || saved.cameraLockMode === 'perSide' ? saved.cameraLockMode : DEFAULT_SETTINGS.cameraLockMode;
+  return { champion, castMode: isCastMode(saved.castMode) ? saved.castMode : DEFAULT_SETTINGS.castMode, slotCastModes, cameraLocked, cameraLockMode };
 }
 
 export function saveSettings(settings: Settings): void {

@@ -24,7 +24,9 @@ const HELP = [
   'Q W E R  cast (modes below; RMB cancels aiming)',
   'S        stop',
   'Ctrl/Alt + Q W E R   level up an ability (or click +)',
-  'Space    center camera   Y  lock / unlock camera',
+  'Space    hold to follow your champion (F1 too)',
+  'Y        lock / unlock camera',
+  'Arrows / screen edge / middle-drag   pan the camera',
 ].join('\n');
 
 const SLOT = 64;

@@ -76,13 +76,43 @@ describe('cast modes', () => {
 describe('settings storage', () => {
   it('round-trips and falls back to defaults for junk', () => {
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
-    saveSettings({ champion: 'shadeblade', castMode: 'quick', slotCastModes: { Q: 'normal', W: null, E: null, R: null } });
+    saveSettings({ champion: 'shadeblade', castMode: 'quick', slotCastModes: { Q: 'normal', W: null, E: null, R: null }, cameraLocked: true, cameraLockMode: 'fixed' });
     const loaded = loadSettings();
+    expect(loaded.cameraLocked).toBe(true);
+    expect(loaded.cameraLockMode).toBe('fixed');
     expect(castModeFor(loaded, 'Q')).toBe('normal');
     expect(castModeFor(loaded, 'W')).toBe('quick');
     expect(loaded.champion).toBe('shadeblade');
 
     localStorage.setItem('1v1me.settings', '{"champion":"marksman","castMode":"turbo","slotCastModes":{"Q":42}}');
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
+  });
+});
+
+describe('camera controls', () => {
+  it('follows while Space or F1 is held, pans with arrow keys and middle-button drag', () => {
+    const { controls } = setup('quick');
+    const key = (type: 'keydown' | 'keyup', code: string) => window.dispatchEvent(new KeyboardEvent(type, { code }));
+    expect(controls.followHeld).toBe(false);
+    key('keydown', 'Space');
+    expect(controls.followHeld).toBe(true);
+    key('keyup', 'Space');
+    key('keydown', 'F1');
+    expect(controls.followHeld).toBe(true);
+    key('keyup', 'F1');
+    expect(controls.followHeld).toBe(false);
+
+    key('keydown', 'ArrowUp');
+    key('keydown', 'ArrowRight');
+    expect(controls.arrowPan).toEqual({ x: 1, y: -1 });
+    key('keyup', 'ArrowUp');
+    expect(controls.arrowPan).toEqual({ x: 1, y: 0 });
+
+    const canvas = document.querySelector('canvas')!;
+    canvas.dispatchEvent(new MouseEvent('mousedown', { button: 1, clientX: 500, clientY: 400 }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 460, clientY: 430 }));
+    window.dispatchEvent(new MouseEvent('mouseup', { button: 1, clientX: 460, clientY: 430 }));
+    expect(controls.takeDrag()).toEqual({ x: 40, y: -30 }); // the view moves opposite to the drag
+    expect(controls.takeDrag()).toEqual({ x: 0, y: 0 });
   });
 });

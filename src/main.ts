@@ -6,7 +6,7 @@ import { OfflineSession } from './client/offline';
 import { OnlineSession, defaultServerUrl } from './client/online';
 import { Renderer } from './client/renderer';
 import type { Session } from './client/session';
-import { CAST_MODES, castModeFor, loadSettings, saveSettings, type CastMode, type Settings } from './client/settings';
+import { CAST_MODES, castModeFor, loadSettings, saveSettings, type CameraLockMode, type CastMode, type Settings } from './client/settings';
 import { ABILITY_SLOTS, LANE_Y, PLAYABLE, WORLD_SIZE } from './sim/defs';
 
 type Mode = 'offline' | 'practice' | 'duel';
@@ -56,6 +56,9 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
   document.getElementById('app')!.appendChild(app.canvas);
 
   const camera = new Camera(session.view.units.get(session.playerId)?.pos ?? { x: WORLD_SIZE.width / 2, y: LANE_Y });
+  camera.locked = settings.cameraLocked;
+  /** Set once your champion first appears (online, that's after the first snapshot). */
+  let framed = false;
   const controls = new Controls(
     app.canvas,
     session.view,
@@ -90,12 +93,23 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
           if (ev.kind === 'minion') cs++;
         }
       }
+      // LoL's "move camera on revive": a free camera jumps back to you when you respawn.
+      if (ev.type === 'respawn' && ev.unitId === session.playerId) {
+        const me = session.view.units.get(session.playerId);
+        if (me) camera.centerOn(me.pos);
+      }
       renderer.handleEvent(ev);
     }
 
     const player = session.view.units.get(session.playerId);
-    const follow = player && (camera.locked || controls.spaceHeld) ? session.renderPos(player) : null;
-    camera.update(dt, follow, controls.mouse, controls.mouseInWindow);
+    if (player && !framed) {
+      framed = true;
+      // Per-side offset: look toward the enemy base, up-right from the blue side and down-left from the red side.
+      if (settings.cameraLockMode === 'perSide') camera.setSideOffset({ x: player.team === 'blue' ? 1 : -1, y: 0 });
+      camera.centerOn(session.renderPos(player));
+    }
+    const follow = player && (camera.locked || controls.followHeld) ? session.renderPos(player) : null;
+    camera.update(dt, follow, { mouse: controls.mouse, mouseInWindow: controls.mouseInWindow, keys: controls.arrowPan, drag: controls.takeDrag() });
     renderer.render(
       (u) => session.renderPos(u),
       (p) => session.projectilePos(p),
@@ -123,6 +137,8 @@ function setupSettings(settings: Settings): void {
   const menu = document.getElementById('menu')!;
   const form = document.getElementById('settings') as HTMLFormElement;
   const fallback = document.getElementById('cast-default') as HTMLSelectElement;
+  const cameraMode = document.getElementById('camera-mode') as HTMLSelectElement;
+  const cameraLockMode = document.getElementById('camera-lock-mode') as HTMLSelectElement;
   const hint = document.getElementById('cast-hint')!;
   const perSlot = [...form.querySelectorAll<HTMLSelectElement>('select[data-slot]')];
   const option = (value: string, label: string) => new Option(label, value);
@@ -135,6 +151,8 @@ function setupSettings(settings: Settings): void {
   const showHint = () => (hint.textContent = CAST_MODES.find((m) => m.value === fallback.value)!.hint);
   const fill = () => {
     fallback.value = settings.castMode;
+    cameraMode.value = settings.cameraLocked ? 'locked' : 'free';
+    cameraLockMode.value = settings.cameraLockMode;
     for (const select of perSlot) select.value = settings.slotCastModes[select.dataset.slot as keyof Settings['slotCastModes']] ?? '';
     showHint();
   };
@@ -148,6 +166,8 @@ function setupSettings(settings: Settings): void {
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     settings.castMode = fallback.value as CastMode;
+    settings.cameraLocked = cameraMode.value === 'locked';
+    settings.cameraLockMode = cameraLockMode.value as CameraLockMode;
     for (const select of perSlot) {
       settings.slotCastModes[select.dataset.slot as keyof Settings['slotCastModes']] = (select.value || null) as CastMode | null;
     }

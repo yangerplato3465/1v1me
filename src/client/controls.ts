@@ -19,10 +19,16 @@ export class Controls {
   /** The ability slot whose indicator is showing, if any. */
   aiming: AbilitySlot | null = null;
   attackMoveArmed = false;
+  /** Space or F1 held: the camera follows your champion until released, like LoL. */
   spaceHeld = false;
+  private selfHeld = false;
   hoverId: number | null = null;
   private rightHeld = false;
   private repeatIn = 0;
+  private readonly arrows = new Set<string>();
+  /** Middle-button drag in progress: the last mouse position seen. */
+  private dragFrom: Vec | null = null;
+  private dragged: Vec = { x: 0, y: 0 };
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -38,9 +44,16 @@ export class Controls {
     window.addEventListener('mousemove', (e) => {
       this.mouse = { x: e.clientX, y: e.clientY };
       this.mouseInWindow = true;
+      if (this.dragFrom) {
+        // Grab-and-drag: the ground moves with the mouse, so the view moves the other way.
+        this.dragged.x += this.dragFrom.x - e.clientX;
+        this.dragged.y += this.dragFrom.y - e.clientY;
+        this.dragFrom = { x: e.clientX, y: e.clientY };
+      }
     });
     window.addEventListener('mouseup', (e) => {
       if (e.button === 2) this.rightHeld = false;
+      if (e.button === 1) this.dragFrom = null;
     });
     document.documentElement.addEventListener('mouseleave', () => (this.mouseInWindow = false));
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
@@ -49,11 +62,32 @@ export class Controls {
       this.rightHeld = false;
       this.aiming = null;
       this.spaceHeld = false;
+      this.selfHeld = false;
+      this.arrows.clear();
+      this.dragFrom = null;
     });
   }
 
   get mouseWorld(): Vec {
     return this.camera.screenToWorld(this.mouse);
+  }
+
+  /** Space or F1 held: follow your champion. */
+  get followHeld(): boolean {
+    return this.spaceHeld || this.selfHeld;
+  }
+
+  /** Arrow keys held, as a screen direction. */
+  get arrowPan(): Vec {
+    const a = this.arrows;
+    return { x: (a.has('ArrowRight') ? 1 : 0) - (a.has('ArrowLeft') ? 1 : 0), y: (a.has('ArrowDown') ? 1 : 0) - (a.has('ArrowUp') ? 1 : 0) };
+  }
+
+  /** Screen pixels dragged with the middle button since the last call. */
+  takeDrag(): Vec {
+    const d = this.dragged;
+    this.dragged = { x: 0, y: 0 };
+    return d;
   }
 
   private get player(): Unit | null {
@@ -75,6 +109,11 @@ export class Controls {
     // A click can arrive without a mousemove first (e.g. right after switching windows).
     this.mouse = { x: e.clientX, y: e.clientY };
     this.mouseInWindow = true;
+    if (e.button === 1) {
+      e.preventDefault(); // no browser autoscroll
+      this.dragFrom = { ...this.mouse };
+      return;
+    }
     if (e.button === 2) {
       // Right-click while aiming cancels the spell instead of moving.
       if (this.aiming) {
@@ -103,7 +142,8 @@ export class Controls {
   }
 
   private onKeyDown(e: KeyboardEvent): void {
-    if (e.code === 'Space') e.preventDefault();
+    if (e.code === 'Space' || e.code === 'F1' || e.code.startsWith('Arrow')) e.preventDefault();
+    if (e.code.startsWith('Arrow')) this.arrows.add(e.code);
     if (e.repeat) return;
     const slot = SLOT_KEYS[e.code];
     // LoL levels abilities up with Ctrl + key. Browsers keep Ctrl+W (close tab), so Alt + key works too.
@@ -127,6 +167,9 @@ export class Controls {
         break;
       case 'Space':
         this.spaceHeld = true;
+        break;
+      case 'F1':
+        this.selfHeld = true;
         break;
       case 'KeyY':
         this.camera.locked = !this.camera.locked;
@@ -159,6 +202,8 @@ export class Controls {
     const slot = SLOT_KEYS[e.code];
     if (slot && this.aiming === slot && castModeFor(this.settings, slot) === 'quickIndicator') this.cast(slot);
     if (e.code === 'Space') this.spaceHeld = false;
+    if (e.code === 'F1') this.selfHeld = false;
+    this.arrows.delete(e.code);
   }
 
   private cast(slot: AbilitySlot): void {

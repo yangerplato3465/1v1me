@@ -64,6 +64,15 @@
           <label>E <select data-slot="E"></select></label>
           <label>R <select data-slot="R"></select></label>
         </fieldset>
+        <label>Camera at start <select id="camera-mode">
+          <option value="free">Free (Y to lock)</option>
+          <option value="locked">Locked to champion</option>
+        </select></label>
+        <label>Camera lock mode <select id="camera-lock-mode">
+          <option value="perSide">Per-side offset (see more of the enemy side)</option>
+          <option value="fixed">Fixed (champion in the center)</option>
+        </select></label>
+        <p class="hint">Hold Space or F1 to follow your champion. Pan with the screen edges, arrow keys or by dragging with the middle mouse button.</p>
         <div class="actions">
           <button type="button" class="secondary" id="settings-back">Back</button>
           <button type="submit">Save</button>
