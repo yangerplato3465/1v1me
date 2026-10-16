@@ -1,7 +1,7 @@
 import { Container, Graphics, Text } from 'pixi.js';
 import { WORLD_SIZE } from '../sim/defs';
 import { add, angleOf, dist, normalize, scale, sub, type Vec } from '../sim/math';
-import type { GameView, Projectile, SimEvent, Unit } from '../sim/world';
+import { isUntargetable, type GameView, type Projectile, type Shadow, type SimEvent, type Unit } from '../sim/world';
 import { TILT, type Camera } from './camera';
 import type { Controls, MarkerKind } from './controls';
 import { COLORS, FONT, bodyRadius, teamColor, teamLight } from './theme';
@@ -13,6 +13,10 @@ const SPARK_SECONDS = 0.3;
 const FLOAT_SECONDS = 0.9;
 const BLINK_TRAIL_SECONDS = 0.35;
 const MARK_COLOR = 0xc77dff;
+const SHADOW_COLOR = 0x2a1740;
+const DEATH_MARK_COLOR = 0xff2e4d;
+const SLOW_COLOR = 0x7fd3ff;
+const SLASH_SECONDS = 0.3;
 const ULT_COLOR = 0xffd166;
 
 interface ClickMarker {
@@ -23,6 +27,13 @@ interface ClickMarker {
 
 interface Spark {
   pos: Vec;
+  color: number;
+  age: number;
+}
+
+interface SlashRing {
+  pos: Vec;
+  radius: number;
   color: number;
   age: number;
 }
@@ -44,6 +55,7 @@ interface FloatingText {
 /** Where to draw things this frame: offline these interpolate between ticks, online between snapshots. */
 export type RenderPos = (u: Unit) => Vec;
 export type ProjectilePos = (p: Projectile) => Vec;
+export type ShadowPos = (s: Shadow) => Vec;
 
 export class Renderer {
   /** World-space layer squashed by the camera tilt: floor, rings, indicators. */
@@ -57,6 +69,8 @@ export class Renderer {
   private markers: ClickMarker[] = [];
   private sparks: Spark[] = [];
   private blinks: BlinkTrail[] = [];
+  private slashes: SlashRing[] = [];
+  private readonly shadowViews = new Map<number, ShadowView>();
   private floats: FloatingText[] = [];
 
   constructor(
@@ -106,7 +120,32 @@ export class Renderer {
         this.sparks.push({ pos: ev.from, color, age: 0 }, { pos: ev.to, color, age: 0 });
         break;
       }
-      case 'attackFired':
+      case 'swap': {
+        this.blinks.push({ from: ev.from, to: ev.to, color: MARK_COLOR, age: 0 });
+        this.sparks.push({ pos: ev.from, color: MARK_COLOR, age: 0 }, { pos: ev.to, color: MARK_COLOR, age: 0 });
+        break;
+      }
+      case 'slash': {
+        const u = this.world.units.get(ev.unitId);
+        this.slashes.push({ pos: ev.pos, radius: ev.radius, color: u ? teamLight(u.team) : COLORS.text, age: 0 });
+        break;
+      }
+      case 'deathMarked': {
+        const u = this.world.units.get(ev.unitId);
+        if (u) this.float('MARKED', u.pos, DEATH_MARK_COLOR, 26);
+        break;
+      }
+      case 'attackFired': {
+        const view = this.views.get(ev.unitId);
+        if (view) view.pop = Math.max(view.pop, 0.5);
+        // Melee swings have no missile, so show the cut on the target.
+        const attacker = this.world.units.get(ev.unitId);
+        const target = this.world.units.get(ev.targetId);
+        if (attacker && target && attacker.def.attackProjectileSpeed <= 0) {
+          this.sparks.push({ pos: { ...target.pos }, color: teamLight(attacker.team), age: 0 });
+        }
+        break;
+      }
       case 'castFired': {
         const view = this.views.get(ev.unitId);
         if (view) view.pop = Math.max(view.pop, 0.5);
@@ -131,17 +170,18 @@ export class Renderer {
     }
   }
 
-  render(renderPos: RenderPos, projectilePos: ProjectilePos, dt: number): void {
+  render(renderPos: RenderPos, projectilePos: ProjectilePos, shadowPos: ShadowPos, dt: number): void {
     this.camera.applyTo(this.ground);
-    this.drawGroundFx(renderPos, dt);
+    this.drawGroundFx(renderPos, shadowPos, dt);
     this.drawUnits(renderPos, dt);
+    this.drawShadows(shadowPos);
     this.drawAir(projectilePos, dt);
     this.drawFloats(dt);
   }
 
   // --- floor: rings, range circles, aim lanes, click markers --------------
 
-  private drawGroundFx(renderPos: RenderPos, dt: number): void {
+  private drawGroundFx(renderPos: RenderPos, shadowPos: ShadowPos, dt: number): void {
     const g = this.groundFx.clear();
     const player = this.world.units.get(this.playerId);
     const playerAlive = !!player && this.world.isAlive(player);
@@ -151,36 +191,91 @@ export class Renderer {
       const p = renderPos(u);
       const hovered = this.controls.hoverId === u.id;
       g.circle(p.x, p.y, u.def.radius + 6).stroke({ width: hovered ? 6 : 3, color: teamColor(u.team), alpha: 0.9 });
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 120);
       if (u.statuses.some((st) => st.kind === 'mark')) {
-        const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 120);
         g.circle(p.x, p.y, u.def.radius + 16 + pulse * 4).stroke({ width: 4, color: MARK_COLOR, alpha: 0.6 + 0.4 * pulse });
       }
+      const deathMark = u.statuses.find((st) => st.kind === 'deathMark');
+      if (deathMark) {
+        // Tightens as the detonation approaches.
+        const r = u.def.radius + 10 + deathMark.remaining * 18;
+        g.circle(p.x, p.y, r).stroke({ width: 5, color: DEATH_MARK_COLOR, alpha: 0.6 + 0.4 * pulse });
+      }
+      if (u.statuses.some((st) => st.kind === 'slow')) {
+        g.circle(p.x, p.y, u.def.radius + 2).fill({ color: SLOW_COLOR, alpha: 0.18 });
+      }
 
-      // Telegraph enemy casts so they can be read and dodged.
+      // Telegraph enemy casts so they can be read and dodged, including their shadows' copies.
       const casting = u.cast && u.def.abilities[u.cast.slot];
       if (u.cast && casting?.kind === 'skillshot' && u.id !== this.playerId) {
         const k = 1 - u.cast.remaining / u.cast.total;
         drawLane(g, p, u.cast.dir, casting.range, casting.width, COLORS.red, 0.08 + 0.2 * k, 0.5);
+        if (u.def.shadowMimics?.includes(u.cast.slot)) {
+          for (const sh of this.world.shadows.filter((x) => x.ownerId === u.id)) {
+            const sp = shadowPos(sh);
+            const d = normalize(sub(u.cast.target, sp));
+            if (d.x || d.y) drawLane(g, sp, d, casting.range, casting.width, COLORS.red, 0.06 + 0.15 * k, 0.35);
+          }
+        }
       }
     }
 
     if (player && playerAlive) {
       const pp = renderPos(player);
       if (this.controls.attackMoveArmed) {
-        g.circle(pp.x, pp.y, player.def.attackRange).stroke({ width: 3, color: 0xffffff, alpha: 0.45 });
+        g.circle(pp.x, pp.y, player.def.attackRange + player.def.radius).stroke({ width: 3, color: 0xffffff, alpha: 0.45 });
       }
+      const slot = this.controls.aiming;
+      const myShadows = this.world.shadows.filter((sh) => sh.ownerId === player.id);
+      const mimicking = slot && player.def.shadowMimics?.includes(slot) ? myShadows : [];
       const aimed = this.controls.aiming && player.def.abilities[this.controls.aiming];
       const mouse = this.controls.mouseWorld;
       const dir = normalize(sub(mouse, pp));
       const color = this.controls.aiming === 'R' ? ULT_COLOR : 0x5fb8ff;
       if (aimed?.kind === 'skillshot' && (dir.x !== 0 || dir.y !== 0)) {
         drawLane(g, pp, dir, aimed.range, aimed.width, color, 0.22, 0.9);
+        for (const sh of mimicking) {
+          const sp = shadowPos(sh);
+          const d = normalize(sub(mouse, sp));
+          if (d.x || d.y) drawLane(g, sp, d, aimed.range, aimed.width, MARK_COLOR, 0.14, 0.6);
+        }
+      } else if (aimed?.kind === 'area') {
+        g.circle(pp.x, pp.y, aimed.radius).fill({ color, alpha: 0.12 }).stroke({ width: 3, color, alpha: 0.8 });
+        for (const sh of mimicking) {
+          const sp = shadowPos(sh);
+          g.circle(sp.x, sp.y, aimed.radius).fill({ color: MARK_COLOR, alpha: 0.1 }).stroke({ width: 3, color: MARK_COLOR, alpha: 0.6 });
+        }
+      } else if (aimed && (aimed.kind === 'shadow' || aimed.kind === 'deathMark') && myShadows.some((sh) => sh.slot === slot && !sh.swapped)) {
+        // Recast: show the swap.
+        const sh = myShadows.find((x) => x.slot === slot && !x.swapped)!;
+        const sp = shadowPos(sh);
+        g.moveTo(pp.x, pp.y).lineTo(sp.x, sp.y).stroke({ width: 4, color: MARK_COLOR, alpha: 0.7 });
+        g.circle(sp.x, sp.y, player.def.radius).stroke({ width: 3, color: MARK_COLOR, alpha: 0.9 });
+      } else if (aimed?.kind === 'shadow') {
+        const dest = add(pp, scale(dir, Math.min(aimed.range, dist(pp, mouse))));
+        g.moveTo(pp.x, pp.y).lineTo(dest.x, dest.y).stroke({ width: 3, color: MARK_COLOR, alpha: 0.6 });
+        g.circle(dest.x, dest.y, player.def.radius).fill({ color: SHADOW_COLOR, alpha: 0.35 }).stroke({ width: 3, color: MARK_COLOR, alpha: 0.9 });
+      } else if (aimed?.kind === 'deathMark') {
+        g.circle(pp.x, pp.y, aimed.range).stroke({ width: 3, color: DEATH_MARK_COLOR, alpha: 0.6 });
+        const target = [...this.world.units.values()]
+          .filter((u) => u.team !== player.team && this.world.isAlive(u) && dist(pp, u.pos) <= aimed.range + u.def.radius)
+          .sort((a, b) => dist(mouse, a.pos) - dist(mouse, b.pos))[0];
+        if (target && dist(mouse, target.pos) <= 250 + target.def.radius) {
+          const tp = renderPos(target);
+          g.circle(tp.x, tp.y, target.def.radius + 12).stroke({ width: 5, color: DEATH_MARK_COLOR, alpha: 0.9 });
+        }
       } else if (aimed?.kind === 'blink') {
         const dest = add(pp, scale(dir, Math.min(aimed.range, dist(pp, mouse))));
         g.circle(pp.x, pp.y, aimed.range).stroke({ width: 3, color, alpha: 0.6 });
         g.circle(dest.x, dest.y, player.def.radius).fill({ color, alpha: 0.25 }).stroke({ width: 3, color, alpha: 0.9 });
         if (aimed.bolt) g.circle(dest.x, dest.y, aimed.bolt.range).stroke({ width: 2, color, alpha: 0.2 });
       }
+    }
+
+    this.slashes = this.slashes.filter((r) => (r.age += dt) < SLASH_SECONDS);
+    for (const r of this.slashes) {
+      const t = r.age / SLASH_SECONDS;
+      g.circle(r.pos.x, r.pos.y, r.radius * (0.6 + 0.4 * t)).stroke({ width: 10 * (1 - t) + 2, color: r.color, alpha: 0.8 * (1 - t) });
     }
 
     this.blinks = this.blinks.filter((b) => (b.age += dt) < BLINK_TRAIL_SECONDS);
@@ -223,6 +318,32 @@ export class Renderer {
       view.root.position.set(s.x, s.y);
       view.root.zIndex = p.y;
       view.update(u, this.world.isAlive(u), this.camera.zoom, dt);
+    }
+  }
+
+  private drawShadows(shadowPos: ShadowPos): void {
+    const live = new Set(this.world.shadows.map((sh) => sh.id));
+    for (const [id, view] of this.shadowViews) {
+      if (live.has(id)) continue;
+      view.root.destroy({ children: true });
+      this.shadowViews.delete(id);
+    }
+    for (const sh of this.world.shadows) {
+      const owner = this.world.units.get(sh.ownerId);
+      if (!owner) continue;
+      let view = this.shadowViews.get(sh.id);
+      if (!view) {
+        view = new ShadowView(owner);
+        this.shadowViews.set(sh.id, view);
+        this.unitLayer.addChild(view.root);
+      }
+      const p = shadowPos(sh);
+      const s = this.camera.worldToScreen(p);
+      view.root.position.set(s.x, s.y);
+      view.root.zIndex = p.y;
+      view.root.scale.set(this.camera.zoom);
+      // Fade out over the last second.
+      view.root.alpha = Math.min(1, sh.remaining) * (sh.swapped ? 0.55 : 0.8);
     }
   }
 
@@ -375,7 +496,7 @@ class UnitView {
     this.pop = Math.max(0, this.pop - dt * 6);
     this.flash = Math.max(0, this.flash - dt * 8);
     this.root.scale.set(zoom * (1 + this.pop * 0.1));
-    this.root.alpha = alive ? 1 : 0.3;
+    this.root.alpha = !alive ? 0.3 : isUntargetable(unit) ? 0.35 : 1;
     this.flashBody.alpha = this.flash * 0.8;
     this.status.text = alive ? '' : unit.respawnIn.toFixed(1);
 
@@ -409,7 +530,7 @@ class UnitView {
     for (let hp = 100; hp < unit.def.maxHp; hp += 100) {
       b.rect(-bw / 2 + (bw * hp) / unit.def.maxHp, by, 1, bh).fill({ color: 0x000000, alpha: 0.5 });
     }
-    b.rect(-bw / 2, by + bh + 1, (bw * unit.mana) / unit.def.maxMana, 3).fill(COLORS.mana);
+    b.rect(-bw / 2, by + bh + 1, (bw * unit.mana) / unit.def.maxMana, 3).fill(unit.def.resource === 'energy' ? COLORS.energy : COLORS.mana);
     // Passive attack-speed stacks as pips above the health bar.
     const stacks = unit.statuses.find((st) => st.kind === 'attackSpeed');
     if (stacks?.kind === 'attackSpeed') {
@@ -425,4 +546,21 @@ function drawBody(g: Graphics, r: number, main: number, light: number): void {
   g.circle(0, -r * 2.15, r * 0.5)
     .fill(light)
     .stroke({ width: 3, color: 0x0a0a0a, alpha: 0.6 });
+}
+
+/** A champion's shadow: its silhouette in dark violet. */
+class ShadowView {
+  readonly root = new Container();
+
+  constructor(owner: Unit) {
+    const r = bodyRadius(owner.def);
+    const shadow = new Graphics().ellipse(0, 0, r * 1.05, r * 0.5).fill({ color: 0x000000, alpha: 0.25 });
+    const body = new Graphics();
+    drawBody(body, r, SHADOW_COLOR, 0x4a2a6e);
+    const eyes = new Graphics()
+      .circle(-r * 0.18, -r * 2.2, r * 0.09)
+      .circle(r * 0.18, -r * 2.2, r * 0.09)
+      .fill(DEATH_MARK_COLOR);
+    this.root.addChild(shadow, body, eyes);
+  }
 }

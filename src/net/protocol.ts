@@ -1,6 +1,6 @@
 import { ABILITY_SLOTS, CHAMPIONS, type AbilitySlot } from '../sim/defs';
 import type { Vec } from '../sim/math';
-import type { Order, PlayerCommand, Projectile, SimEvent, Team, Unit } from '../sim/world';
+import type { Order, PlayerCommand, Projectile, Shadow, SimEvent, Team, Unit } from '../sim/world';
 
 // Messages shared by the Colyseus server and the browser client. The server is
 // authoritative: clients send numbered CommandMessages, the server sends a Snapshot every
@@ -22,6 +22,8 @@ export const MSG = {
 export interface JoinOptions {
   /** Solo room against the server-side practice bot. */
   practice?: boolean;
+  /** Champion id from PLAYABLE; anything else falls back to the first. */
+  champ?: string;
 }
 
 export interface Welcome {
@@ -59,6 +61,7 @@ export interface UnitSnapshot {
   attackCooldown: number;
   windup: Unit['windup'];
   cast: Unit['cast'];
+  dash: Unit['dash'];
   cooldowns: Unit['cooldowns'];
   statuses: Unit['statuses'];
   respawnIn: number;
@@ -68,6 +71,7 @@ export interface Snapshot {
   tick: number;
   units: UnitSnapshot[];
   projectiles: Projectile[];
+  shadows: Shadow[];
   /** Events that happened during this tick. */
   events: SimEvent[];
   you?: OwnState;
@@ -86,6 +90,7 @@ export function toUnitSnapshot(u: Unit): UnitSnapshot {
     attackCooldown: u.attackCooldown,
     windup: u.windup,
     cast: u.cast,
+    dash: u.dash,
     cooldowns: u.cooldowns,
     statuses: u.statuses,
     respawnIn: u.respawnIn,
@@ -109,6 +114,7 @@ export function fromUnitSnapshot(s: UnitSnapshot): Unit {
     attackCooldown: s.attackCooldown,
     windup: s.windup,
     cast: s.cast,
+    dash: s.dash,
     cooldowns: s.cooldowns,
     statuses: s.statuses,
     respawnIn: s.respawnIn,

@@ -3,9 +3,12 @@ import {
   RESPAWN_SECONDS,
   TICK_RATE,
   WORLD_SIZE,
+  type AbilityDef,
   type AbilitySlot,
+  type AreaAbility,
   type BlinkAbility,
   type ChampionDef,
+  type DeathMarkAbility,
   type MarkEffect,
   type SkillshotAbility,
 } from './defs';
@@ -39,7 +42,11 @@ export type Order =
 /** Timed effects on a unit. */
 export type Status =
   | { kind: 'attackSpeed'; stacks: number; perStack: number; remaining: number }
-  | { kind: 'mark'; sourceId: number; remaining: number; effect: MarkEffect };
+  | { kind: 'mark'; sourceId: number; remaining: number; effect: MarkEffect }
+  | { kind: 'slow'; amount: number; remaining: number }
+  | { kind: 'untargetable'; remaining: number }
+  | { kind: 'deathMark'; sourceId: number; remaining: number; stored: number; pct: number; baseDamage: number }
+  | { kind: 'executeCooldown'; sourceId: number; remaining: number };
 
 export interface Unit {
   id: number;
@@ -49,16 +56,35 @@ export interface Unit {
   pos: Vec;
   facing: number;
   hp: number;
+  /** Mana or energy, per def.resource. */
   mana: number;
   order: Order;
   /** Seconds until the next auto-attack may start. */
   attackCooldown: number;
   windup: { remaining: number; total: number; targetId: number } | null;
-  cast: { slot: AbilitySlot; remaining: number; total: number; dir: Vec; target: Vec } | null;
+  cast: { slot: AbilitySlot; remaining: number; total: number; dir: Vec; target: Vec; targetId: number | null } | null;
+  /** A forced movement (e.g. the death-mark dash); orders wait until it ends. */
+  dash: { from: Vec; to: Vec; remaining: number; total: number; markTargetId: number | null } | null;
   cooldowns: Record<AbilitySlot, number>;
   statuses: Status[];
   /** > 0 while dead. */
   respawnIn: number;
+}
+
+/** A champion's shadow: it dashes into place, copies mimicked abilities, and can be swapped with once. */
+export interface Shadow {
+  id: number;
+  ownerId: number;
+  team: Team;
+  /** The ability that created it; recasting that ability swaps with it. */
+  slot: AbilitySlot;
+  pos: Vec;
+  /** Position at the start of the last step, for render interpolation. */
+  prev: Vec;
+  dashTo: Vec | null;
+  dashSpeed: number;
+  remaining: number;
+  swapped: boolean;
 }
 
 /** What a player asks for. The server attaches the unitId it owns; clients never choose it. */
@@ -100,8 +126,13 @@ export interface SkillshotProjectile extends ProjectileBase {
   range: number;
   travelled: number;
   stopsAtFirstHit: boolean;
+  /** Damage to each enemy after the first. */
+  subsequentDamage: number;
   /** Units already hit, so a piercing missile hits each one once. */
   hitIds: number[];
+  /** Groups the caster's and its shadows' copies of one cast (0 = none). */
+  castId: number;
+  fromShadow: boolean;
 }
 
 export type Projectile = HomingProjectile | SkillshotProjectile;
@@ -110,6 +141,7 @@ export type Projectile = HomingProjectile | SkillshotProjectile;
 export interface GameView {
   readonly units: ReadonlyMap<number, Unit>;
   readonly projectiles: readonly Projectile[];
+  readonly shadows: readonly Shadow[];
   isAlive(u: Unit): boolean;
 }
 
@@ -121,15 +153,19 @@ export type SimEvent =
   | { type: 'attackFired'; unitId: number; targetId: number }
   | { type: 'attackCanceled'; unitId: number }
   | { type: 'castStart'; unitId: number; slot: AbilitySlot }
-  | { type: 'castFired'; unitId: number; slot: AbilitySlot; pos: Vec; dir: Vec }
+  | { type: 'castFired'; unitId: number; slot: AbilitySlot; pos: Vec; dir: Vec; target: Vec }
   | { type: 'blink'; unitId: number; from: Vec; to: Vec }
+  | { type: 'swap'; unitId: number; from: Vec; to: Vec }
+  | { type: 'slash'; unitId: number; pos: Vec; radius: number }
   | { type: 'marked'; unitId: number; sourceId: number }
+  | { type: 'deathMarked'; unitId: number; sourceId: number }
   | { type: 'skillshotExpired'; pos: Vec; team: Team };
 
 export interface WorldOptions {
   /**
-   * False for the client's prediction copy: units still move, attack, cast and blink, but
-   * nothing spawns missiles or deals damage. Hits belong to the server alone.
+   * False for the client's prediction copy: units still move, attack, cast, blink, dash
+   * and place shadows, but nothing spawns missiles or deals damage. Hits belong to the
+   * server alone.
    */
   authoritative?: boolean;
 }
@@ -143,7 +179,12 @@ const WINDUP_GRACE = 1 / TICK_RATE + 1e-9;
 
 /** An A-click this close to an enemy's edge targets that enemy directly. */
 const ATTACK_MOVE_SNAP = 200;
+/** A unit-targeted cast picks the enemy nearest the cursor within this distance of it. */
+const TARGET_PICK_RADIUS = 250;
+/** Cooldown left on a death mark whose target died before the dash. */
+const DEATH_MARK_FIZZLE_COOLDOWN = 0.5;
 const WORLD_MARGIN = 40;
+const CAST_TRACKING_SECONDS = 5;
 
 const IDLE: Order = { kind: 'idle' };
 
@@ -163,13 +204,40 @@ export function attackSpeedOf(u: Unit): number {
   return u.def.attackSpeed * (1 + bonus);
 }
 
+/** Move speed after the strongest slow (slows don't stack in LoL). */
+export function moveSpeedOf(u: Unit): number {
+  let slow = 0;
+  for (const s of u.statuses) if (s.kind === 'slow') slow = Math.max(slow, s.amount);
+  return u.def.moveSpeed * (1 - slow);
+}
+
+export function isUntargetable(u: Unit): boolean {
+  return u.statuses.some((s) => s.kind === 'untargetable');
+}
+
+/** Hits from one cast by the caster and by its shadows, for the shared-hit refund. */
+interface CastRecord {
+  ownerId: number;
+  time: number;
+  own: Set<number>;
+  shadow: Set<number>;
+  refunded: boolean;
+}
+
+interface HitContext {
+  castId?: number;
+  fromShadow?: boolean;
+}
+
 export class World {
   time = 0;
   readonly units = new Map<number, Unit>();
   projectiles: Projectile[] = [];
+  shadows: Shadow[] = [];
   readonly authoritative: boolean;
   private nextId = 1;
   private events: SimEvent[] = [];
+  private readonly casts = new Map<number, CastRecord>();
 
   constructor(options: WorldOptions = {}) {
     this.authoritative = options.authoritative ?? true;
@@ -189,6 +257,7 @@ export class World {
       attackCooldown: 0,
       windup: null,
       cast: null,
+      dash: null,
       cooldowns: noCooldowns(),
       statuses: [],
       respawnIn: 0,
@@ -200,10 +269,20 @@ export class World {
   removeUnit(id: number): void {
     this.units.delete(id);
     this.projectiles = this.projectiles.filter((p) => p.ownerId !== id);
+    this.shadows = this.shadows.filter((s) => s.ownerId !== id);
+  }
+
+  /** Makes future ids larger than `id` (used when copying server entities into a world). */
+  reserveIds(id: number): void {
+    this.nextId = Math.max(this.nextId, id + 1);
   }
 
   isAlive(u: Unit): boolean {
     return u.respawnIn <= 0;
+  }
+
+  isTargetable(u: Unit): boolean {
+    return this.isAlive(u) && !isUntargetable(u);
   }
 
   attackPeriod(u: Unit): number {
@@ -213,6 +292,10 @@ export class World {
   /** Edge to edge, like LoL. */
   inAttackRange(u: Unit, target: Unit): boolean {
     return dist(u.pos, target.pos) <= u.def.attackRange + u.def.radius + target.def.radius;
+  }
+
+  ownShadows(u: Unit): Shadow[] {
+    return this.shadows.filter((s) => s.ownerId === u.id);
   }
 
   drainEvents(): SimEvent[] {
@@ -230,7 +313,7 @@ export class World {
         break;
       case 'attack': {
         const target = this.units.get(cmd.targetId);
-        if (target && target.team !== u.team && this.isAlive(target)) {
+        if (target && target.team !== u.team && this.isTargetable(target)) {
           this.setOrder(u, { kind: 'attack', targetId: target.id });
         }
         break;
@@ -255,7 +338,9 @@ export class World {
   step(dt: number): void {
     this.time += dt;
     for (const u of this.units.values()) this.stepUnit(u, dt);
+    this.stepShadows(dt);
     this.stepProjectiles(dt);
+    for (const [id, record] of this.casts) if (this.time - record.time > CAST_TRACKING_SECONDS) this.casts.delete(id);
   }
 
   // --- orders -------------------------------------------------------------
@@ -279,15 +364,64 @@ export class World {
 
   private cast(u: Unit, slot: AbilitySlot, target: Vec): void {
     const ability = u.def.abilities[slot];
-    if (!ability || u.cast || u.cooldowns[slot] > 0 || u.mana < ability.manaCost) return;
+    if (!ability || u.cast || u.dash) return;
+    if (this.trySwapRecast(u, slot, ability)) return;
+    if (u.cooldowns[slot] > 0 || u.mana < ability.manaCost) return;
+
+    let targetId: number | null = null;
+    if (ability.kind === 'deathMark') {
+      const victim = this.pickDeathMarkTarget(u, ability, target);
+      if (!victim) return;
+      targetId = victim.id;
+    }
+
     this.cancelWindup(u);
     let dir = normalize(sub(target, u.pos));
     if (dir.x === 0 && dir.y === 0) dir = fromAngle(u.facing);
     u.mana -= ability.manaCost;
     u.cooldowns[slot] = ability.cooldown;
     u.facing = angleOf(dir);
-    u.cast = { slot, remaining: ability.castTime, total: ability.castTime, dir, target: { ...target } };
+    u.cast = { slot, remaining: ability.castTime, total: ability.castTime, dir, target: { ...target }, targetId };
     this.events.push({ type: 'castStart', unitId: u.id, slot });
+
+    if (ability.kind === 'deathMark') {
+      u.statuses.push({ kind: 'untargetable', remaining: ability.castTime + ability.dashTime });
+      this.spawnShadow(u, slot, u.pos, null, 0, ability.shadowDuration);
+    }
+    // Abilities without a cast time happen at once and never root.
+    if (ability.castTime <= 0) this.finishCast(u);
+  }
+
+  /** Recasting a shadow ability swaps places with its shadow, once. */
+  private trySwapRecast(u: Unit, slot: AbilitySlot, ability: AbilityDef): boolean {
+    if (ability.kind !== 'shadow' && ability.kind !== 'deathMark') return false;
+    const shadow = this.shadows.find((s) => s.ownerId === u.id && s.slot === slot && !s.swapped);
+    if (!shadow) return false;
+    if (ability.kind === 'deathMark' && shadow.remaining <= ability.recastCutoff) return true;
+    this.cancelWindup(u);
+    const from = { ...u.pos };
+    u.pos = { ...shadow.pos };
+    shadow.pos = from;
+    shadow.prev = { ...from };
+    shadow.dashTo = null;
+    shadow.swapped = true;
+    this.events.push({ type: 'swap', unitId: u.id, from, to: { ...u.pos } });
+    return true;
+  }
+
+  private pickDeathMarkTarget(u: Unit, ability: DeathMarkAbility, point: Vec): Unit | null {
+    let best: Unit | null = null;
+    let bestDist = Infinity;
+    for (const other of this.units.values()) {
+      if (other.team === u.team || !this.isTargetable(other)) continue;
+      if (dist(u.pos, other.pos) > ability.range + other.def.radius) continue;
+      const d = dist(point, other.pos);
+      if (d <= TARGET_PICK_RADIUS + other.def.radius && d < bestDist) {
+        best = other;
+        bestDist = d;
+      }
+    }
+    return best;
   }
 
   // --- unit step ----------------------------------------------------------
@@ -303,8 +437,8 @@ export class World {
     u.mana = Math.min(u.def.maxMana, u.mana + u.def.manaRegen * dt);
     for (const slot of ABILITY_SLOTS) u.cooldowns[slot] = Math.max(0, u.cooldowns[slot] - dt);
     u.attackCooldown = Math.max(0, u.attackCooldown - dt);
-    for (const s of u.statuses) s.remaining -= dt;
-    u.statuses = u.statuses.filter((s) => s.remaining > 0);
+    this.tickStatuses(u, dt);
+    if (!this.isAlive(u)) return; // a detonation can kill
 
     // Rooted while casting. The order is kept, so a move resumes after the cast, like in LoL.
     if (u.cast) {
@@ -313,9 +447,14 @@ export class World {
       return;
     }
 
+    if (u.dash) {
+      this.stepDash(u, dt);
+      return;
+    }
+
     if (u.windup) {
       const target = this.units.get(u.windup.targetId);
-      if (!target || !this.isAlive(target)) {
+      if (!target || !this.isTargetable(target)) {
         this.cancelWindup(u);
       } else {
         u.facing = angleOf(sub(target.pos, u.pos));
@@ -338,6 +477,8 @@ export class World {
         const target = this.units.get(u.order.targetId);
         if (!target || !this.isAlive(target)) {
           u.order = IDLE;
+        } else if (isUntargetable(target)) {
+          // Wait it out, like LoL: the order resumes when the target is targetable again.
         } else if (this.inAttackRange(u, target)) {
           u.facing = angleOf(sub(target.pos, u.pos));
           if (u.attackCooldown <= 0) this.startWindup(u, target);
@@ -355,13 +496,46 @@ export class World {
     }
   }
 
+  private tickStatuses(u: Unit, dt: number): void {
+    for (const s of u.statuses) s.remaining -= dt;
+    const expired = u.statuses.filter((s) => s.remaining <= 0);
+    u.statuses = u.statuses.filter((s) => s.remaining > 0);
+    for (const s of expired) {
+      if (s.kind === 'deathMark' && this.authoritative) {
+        this.damage(u, s.sourceId, s.baseDamage + s.pct * s.stored, 'R', true);
+      }
+    }
+  }
+
+  private stepDash(u: Unit, dt: number): void {
+    const dash = u.dash!;
+    dash.remaining -= dt;
+    const t = clamp(1 - dash.remaining / dash.total, 0, 1);
+    u.pos = lerpVec(dash.from, dash.to, t);
+    if (dash.remaining > 0) return;
+    u.pos = { ...dash.to };
+    u.dash = null;
+    const victim = dash.markTargetId === null ? undefined : this.units.get(dash.markTargetId);
+    const ability = u.def.abilities.R;
+    if (!victim || !this.isAlive(victim) || ability?.kind !== 'deathMark' || !this.authoritative) return;
+    victim.statuses.push({
+      kind: 'deathMark',
+      sourceId: u.id,
+      remaining: ability.markDuration,
+      stored: 0,
+      pct: ability.storedPct,
+      baseDamage: ability.baseDamage,
+    });
+    this.events.push({ type: 'deathMarked', unitId: victim.id, sourceId: u.id });
+  }
+
   /** Returns true once the unit has arrived. */
   private moveToward(u: Unit, target: Vec, dt: number): boolean {
     const to = sub(target, u.pos);
     const d = len(to);
     if (d < 1e-6) return true;
     u.facing = turnToward(u.facing, angleOf(to), u.def.turnRate * dt);
-    const stepLen = u.def.moveSpeed * dt;
+    const stepLen = moveSpeedOf(u) * dt;
     if (d <= stepLen) {
       u.pos = clampToWorld(target);
       return true;
@@ -405,31 +579,70 @@ export class World {
   }
 
   private finishCast(u: Unit): void {
-    const { slot, dir, target } = u.cast!;
+    const { slot, dir, target, targetId } = u.cast!;
     u.cast = null;
     const ability = u.def.abilities[slot];
     if (!ability) return;
+    const castPos = { ...u.pos };
     switch (ability.kind) {
       case 'skillshot':
-        if (this.authoritative) this.fireSkillshot(u, slot, ability, dir);
+        if (this.authoritative) this.fireSkillshots(u, slot, ability, dir, target);
         break;
       case 'blink':
         this.blink(u, slot, ability, dir, target);
         break;
+      case 'shadow': {
+        const dest = clampToWorld(add(u.pos, scale(dir, Math.min(ability.range, dist(u.pos, target)))));
+        this.spawnShadow(u, slot, u.pos, dest, ability.dashSpeed, ability.duration);
+        break;
+      }
+      case 'area':
+        this.slash(u, slot, ability);
+        break;
+      case 'deathMark':
+        this.startDeathMarkDash(u, ability, targetId);
+        break;
     }
-    this.events.push({ type: 'castFired', unitId: u.id, slot, pos: { ...u.pos }, dir });
+    this.events.push({ type: 'castFired', unitId: u.id, slot, pos: castPos, dir, target: { ...target } });
   }
 
-  /** Skillshot range is measured from the caster's center, like LoL. */
-  private fireSkillshot(u: Unit, slot: AbilitySlot, ability: SkillshotAbility, dir: Vec): void {
-    const start = { ...u.pos };
+  private mimics(u: Unit, slot: AbilitySlot): Shadow[] {
+    return u.def.shadowMimics?.includes(slot) ? this.ownShadows(u) : [];
+  }
+
+  private newCast(ownerId: number): number {
+    const id = this.nextId++;
+    this.casts.set(id, { ownerId, time: this.time, own: new Set(), shadow: new Set(), refunded: false });
+    return id;
+  }
+
+  /** Range is measured from the caster's center, like LoL. Shadows throw copies at the same point. */
+  private fireSkillshots(u: Unit, slot: AbilitySlot, ability: SkillshotAbility, dir: Vec, target: Vec): void {
+    const shadows = this.mimics(u, slot);
+    const castId = shadows.length ? this.newCast(u.id) : 0;
+    this.fireSkillshot(u, slot, ability, u.pos, dir, castId, false);
+    for (const shadow of shadows) {
+      const shadowDir = normalize(sub(target, shadow.pos));
+      this.fireSkillshot(u, slot, ability, shadow.pos, shadowDir.x || shadowDir.y ? shadowDir : dir, castId, true);
+    }
+  }
+
+  private fireSkillshot(
+    u: Unit,
+    slot: AbilitySlot,
+    ability: SkillshotAbility,
+    from: Vec,
+    dir: Vec,
+    castId: number,
+    fromShadow: boolean,
+  ): void {
     this.projectiles.push({
       kind: 'skillshot',
       id: this.nextId++,
       ownerId: u.id,
       team: u.team,
-      pos: start,
-      prev: { ...start },
+      pos: { ...from },
+      prev: { ...from },
       speed: ability.speed,
       damage: ability.damage,
       slot,
@@ -438,7 +651,10 @@ export class World {
       range: ability.range,
       travelled: 0,
       stopsAtFirstHit: ability.stopsAtFirstHit,
+      subsequentDamage: ability.subsequentDamage ?? ability.damage,
       hitIds: [],
+      castId,
+      fromShadow,
     });
   }
 
@@ -452,7 +668,7 @@ export class World {
     let best: Unit | null = null;
     let bestScore = Infinity;
     for (const other of this.units.values()) {
-      if (other.team === u.team || !this.isAlive(other)) continue;
+      if (other.team === u.team || !this.isTargetable(other)) continue;
       const d = dist(u.pos, other.pos) - other.def.radius;
       if (d > ability.bolt.range) continue;
       const marked = other.statuses.some((s) => s.kind === 'mark' && s.sourceId === u.id);
@@ -465,6 +681,70 @@ export class World {
     if (best) this.fireHoming(u, best, slot, ability.bolt.speed, ability.bolt.damage);
   }
 
+  private spawnShadow(u: Unit, slot: AbilitySlot, at: Vec, dashTo: Vec | null, dashSpeed: number, duration: number): void {
+    this.shadows = this.shadows.filter((s) => !(s.ownerId === u.id && s.slot === slot));
+    this.shadows.push({
+      id: this.nextId++,
+      ownerId: u.id,
+      team: u.team,
+      slot,
+      pos: { ...at },
+      prev: { ...at },
+      dashTo,
+      dashSpeed,
+      remaining: duration,
+      swapped: false,
+    });
+  }
+
+  /** One slash per enemy per cast, from the caster and from each shadow. */
+  private slash(u: Unit, slot: AbilitySlot, ability: AreaAbility): void {
+    const shadows = this.mimics(u, slot);
+    this.events.push({ type: 'slash', unitId: u.id, pos: { ...u.pos }, radius: ability.radius });
+    for (const s of shadows) this.events.push({ type: 'slash', unitId: u.id, pos: { ...s.pos }, radius: ability.radius });
+    if (!this.authoritative) return;
+
+    const castId = shadows.length ? this.newCast(u.id) : 0;
+    for (const enemy of this.units.values()) {
+      if (enemy.team === u.team || !this.isTargetable(enemy)) continue;
+      const reach = ability.radius + enemy.def.radius;
+      const byOwn = dist(u.pos, enemy.pos) <= reach;
+      const byShadows = shadows.filter((s) => dist(s.pos, enemy.pos) <= reach).length;
+      if (!byOwn && !byShadows) continue;
+
+      if (castId) {
+        if (byOwn) this.recordCastHit(castId, enemy.id, false);
+        if (byShadows) this.recordCastHit(castId, enemy.id, true);
+      }
+      this.hit(enemy, u.id, ability.damage, slot);
+      if (!this.isAlive(enemy)) continue;
+      if (byShadows && ability.shadowSlow) {
+        const { amount, enhancedAmount, duration } = ability.shadowSlow;
+        const strength = byShadows + (byOwn ? 1 : 0) >= 2 ? enhancedAmount : amount;
+        enemy.statuses.push({ kind: 'slow', amount: strength, remaining: duration });
+      }
+      if (byOwn && ability.cooldownRefund) {
+        const { slot: refundSlot, seconds } = ability.cooldownRefund;
+        u.cooldowns[refundSlot] = Math.max(0, u.cooldowns[refundSlot] - seconds);
+      }
+    }
+  }
+
+  private startDeathMarkDash(u: Unit, ability: DeathMarkAbility, targetId: number | null): void {
+    const victim = targetId === null ? undefined : this.units.get(targetId);
+    if (!victim || !this.isAlive(victim)) {
+      // The target died during the wait: the cast fizzles, like LoL.
+      u.statuses = u.statuses.filter((s) => s.kind !== 'untargetable');
+      this.shadows = this.shadows.filter((s) => !(s.ownerId === u.id && s.slot === 'R'));
+      u.cooldowns.R = DEATH_MARK_FIZZLE_COOLDOWN;
+      return;
+    }
+    const away = normalize(sub(victim.pos, u.pos));
+    const to = clampToWorld(add(victim.pos, scale(away.x || away.y ? away : fromAngle(u.facing), ability.landBehind)));
+    u.facing = angleOf(away);
+    u.dash = { from: { ...u.pos }, to, remaining: ability.dashTime, total: ability.dashTime, markTargetId: victim.id };
+  }
+
   private respawn(u: Unit): void {
     u.respawnIn = 0;
     u.pos = { ...u.spawn };
@@ -474,6 +754,7 @@ export class World {
     u.attackCooldown = 0;
     u.cooldowns = noCooldowns();
     u.statuses = [];
+    u.dash = null;
     this.events.push({ type: 'respawn', unitId: u.id });
   }
 
@@ -481,7 +762,7 @@ export class World {
     let best: Unit | null = null;
     let bestDist = Infinity;
     for (const other of this.units.values()) {
-      if (other.team === u.team || !this.isAlive(other)) continue;
+      if (other.team === u.team || !this.isTargetable(other)) continue;
       const d = dist(point, other.pos) - other.def.radius;
       if (d <= maxEdgeDist && d < bestDist) {
         best = other;
@@ -491,7 +772,27 @@ export class World {
     return best;
   }
 
-  // --- projectiles --------------------------------------------------------
+  // --- shadows and projectiles ----------------------------------------------
+
+  private stepShadows(dt: number): void {
+    this.shadows = this.shadows.filter((s) => {
+      s.prev = { ...s.pos };
+      if (s.dashTo) {
+        const to = sub(s.dashTo, s.pos);
+        const d = len(to);
+        const stepLen = s.dashSpeed * dt;
+        if (d <= stepLen) {
+          s.pos = { ...s.dashTo };
+          s.dashTo = null;
+        } else {
+          s.pos = add(s.pos, scale(to, stepLen / d));
+        }
+      }
+      s.remaining -= dt;
+      const owner = this.units.get(s.ownerId);
+      return s.remaining > 0 && !!owner && this.isAlive(owner);
+    });
+  }
 
   private stepProjectiles(dt: number): void {
     const survivors: Projectile[] = [];
@@ -505,7 +806,8 @@ export class World {
 
   private stepHoming(p: HomingProjectile, dt: number): boolean {
     const target = this.units.get(p.targetId);
-    if (!target || !this.isAlive(target)) return false;
+    // Missiles at a target that turns untargetable fizzle, as in LoL.
+    if (!target || !this.isTargetable(target)) return false;
     const to = sub(target.pos, p.pos);
     const d = len(to);
     const stepLen = p.speed * dt;
@@ -525,20 +827,22 @@ export class World {
 
     const hits: { unit: Unit; at: number }[] = [];
     for (const u of this.units.values()) {
-      if (u.team === p.team || !this.isAlive(u) || p.hitIds.includes(u.id)) continue;
+      if (u.team === p.team || !this.isTargetable(u) || p.hitIds.includes(u.id)) continue;
       const at = segmentCircleHit(p.pos, next, u.pos, u.def.radius + p.width / 2);
       if (at !== null) hits.push({ unit: u, at });
     }
     hits.sort((a, b) => a.at - b.at);
 
+    const ctx: HitContext = { castId: p.castId, fromShadow: p.fromShadow };
     if (p.stopsAtFirstHit && hits.length) {
       p.pos = lerpVec(p.pos, next, hits[0].at);
-      this.hit(hits[0].unit, p.ownerId, p.damage, p.slot);
+      this.hit(hits[0].unit, p.ownerId, p.damage, p.slot, ctx);
       return false;
     }
     for (const { unit } of hits) {
+      const amount = p.hitIds.length === 0 ? p.damage : p.subsequentDamage;
       p.hitIds.push(unit.id);
-      this.hit(unit, p.ownerId, p.damage, p.slot);
+      this.hit(unit, p.ownerId, amount, p.slot, ctx);
     }
 
     p.pos = next;
@@ -552,14 +856,16 @@ export class World {
 
   // --- hits ---------------------------------------------------------------
 
-  /** Resolves one landed attack or ability: damage, mark detonation, then on-hit effects. */
-  private hit(target: Unit, sourceId: number, amount: number, source: HitSource): void {
-    if (!this.isAlive(target)) return;
+  /** Resolves one landed attack or ability: damage, passives, marks, then on-hit effects. */
+  private hit(target: Unit, sourceId: number, amount: number, source: HitSource, ctx: HitContext = {}): void {
+    if (!this.isTargetable(target)) return;
     const attacker = this.units.get(sourceId);
     const ability = attacker && source !== 'attack' ? attacker.def.abilities[source] : undefined;
     const appliesMark = ability?.kind === 'skillshot' ? ability.onHit?.mark : undefined;
 
+    if (source === 'attack' && attacker) this.applyExecutePassive(attacker, target);
     if (amount > 0) this.damage(target, sourceId, amount, source, false);
+    if (ctx.castId) this.recordCastHit(ctx.castId, target.id, !!ctx.fromShadow);
 
     // The attacker's own mark detonates on their next attack or ability, except the one that applies marks.
     const markIndex = target.statuses.findIndex((s) => s.kind === 'mark' && s.sourceId === sourceId);
@@ -585,9 +891,33 @@ export class World {
     this.grantPassiveStack(attacker);
   }
 
+  /** Bonus damage on attacks against low-health targets, once per target per cooldown. */
+  private applyExecutePassive(attacker: Unit, target: Unit): void {
+    const passive = attacker.def.passive;
+    if (passive?.kind !== 'executeAttacks') return;
+    if (target.hp >= target.def.maxHp * passive.hpThreshold) return;
+    if (target.statuses.some((s) => s.kind === 'executeCooldown' && s.sourceId === attacker.id)) return;
+    target.statuses.push({ kind: 'executeCooldown', sourceId: attacker.id, remaining: passive.perTargetCooldown });
+    this.damage(target, attacker.id, target.def.maxHp * passive.maxHpPct, 'attack', false);
+  }
+
+  /** Refunds the shared-hit resource once, when the caster and a shadow hit the same enemy with one cast. */
+  private recordCastHit(castId: number, targetId: number, fromShadow: boolean): void {
+    const record = this.casts.get(castId);
+    if (!record) return;
+    (fromShadow ? record.shadow : record.own).add(targetId);
+    if (record.refunded || !record.own.has(targetId) || !record.shadow.has(targetId)) return;
+    record.refunded = true;
+    const owner = this.units.get(record.ownerId);
+    const shadowAbility = owner && Object.values(owner.def.abilities).find((a) => a?.kind === 'shadow');
+    if (owner && shadowAbility?.kind === 'shadow') {
+      owner.mana = Math.min(owner.def.maxMana, owner.mana + shadowAbility.sharedHitRefund);
+    }
+  }
+
   private grantPassiveStack(u: Unit): void {
     const passive = u.def.passive;
-    if (!passive || !this.isAlive(u)) return;
+    if (passive?.kind !== 'abilityHitAttackSpeed' || !this.isAlive(u)) return;
     const status = u.statuses.find((s) => s.kind === 'attackSpeed');
     if (status) {
       status.stacks = Math.min(passive.maxStacks, status.stacks + 1);
@@ -599,6 +929,10 @@ export class World {
 
   private damage(target: Unit, sourceId: number, amount: number, source: HitSource, detonation: boolean): void {
     if (!this.isAlive(target)) return;
+    // A death mark repeats a share of everything its owner deals during it (not its own detonation).
+    if (!(detonation && source === 'R')) {
+      for (const s of target.statuses) if (s.kind === 'deathMark' && s.sourceId === sourceId) s.stored += amount;
+    }
     target.hp = Math.max(0, target.hp - amount);
     this.events.push({ type: 'damage', targetId: target.id, sourceId, amount, source, detonation, pos: { ...target.pos } });
     if (target.hp > 0) return;
@@ -606,7 +940,9 @@ export class World {
     target.order = IDLE;
     target.windup = null;
     target.cast = null;
+    target.dash = null;
     target.statuses = [];
+    this.shadows = this.shadows.filter((s) => s.ownerId !== target.id);
     this.events.push({ type: 'death', unitId: target.id, killerId: sourceId });
   }
 }

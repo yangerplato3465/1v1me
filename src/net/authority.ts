@@ -1,5 +1,5 @@
-import { StrafeBot } from '../sim/bot';
-import { TICK_RATE, WAYFINDER, WORLD_SIZE } from '../sim/defs';
+import { PracticeBot } from '../sim/bot';
+import { PLAYABLE, TICK_RATE, WAYFINDER, WORLD_SIZE } from '../sim/defs';
 import { World, type Team } from '../sim/world';
 import { parseCommandMessage, toUnitSnapshot, type Snapshot, type Welcome } from './protocol';
 
@@ -21,20 +21,21 @@ interface Seat {
 export class Authority {
   readonly world = new World();
   private readonly seats = new Map<string, Seat>();
-  private bot: StrafeBot | null = null;
+  private bot: PracticeBot | null = null;
   /** Last simulated tick. Commands received now are first simulated in tick + 1. */
   private tick = 0;
 
-  join(seatId: string, practice = false): Welcome {
+  join(seatId: string, practice = false, champ?: string): Welcome {
     const taken = new Set([...this.world.units.values()].map((u) => u.team));
     const team: Team = taken.has('blue') ? 'red' : 'blue';
-    const unit = this.world.addUnit(WAYFINDER, team, SPAWNS[team]);
+    const def = PLAYABLE.find((c) => c.id === champ) ?? PLAYABLE[0];
+    const unit = this.world.addUnit(def, team, SPAWNS[team]);
     this.seats.set(seatId, { unitId: unit.id, lastSeq: -1, lastSeqTick: -1 });
 
     if (practice && !this.bot) {
       const botTeam: Team = team === 'blue' ? 'red' : 'blue';
       const botUnit = this.world.addUnit(WAYFINDER, botTeam, SPAWNS[botTeam]);
-      this.bot = new StrafeBot(this.world, botUnit.id, unit.id);
+      this.bot = new PracticeBot(this.world, botUnit.id, unit.id);
     }
     return { unitId: unit.id, tickRate: TICK_RATE };
   }
@@ -64,6 +65,7 @@ export class Authority {
       tick: this.tick,
       units: [...this.world.units.values()].map(toUnitSnapshot),
       projectiles: this.world.projectiles,
+      shadows: this.world.shadows,
       events: this.world.drainEvents(),
     };
   }

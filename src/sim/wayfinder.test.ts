@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TICK_RATE, WAYFINDER, type BlinkAbility, type SkillshotAbility } from './defs';
+import { TICK_RATE, WAYFINDER, type AbilityHitAttackSpeedPassive, type BlinkAbility, type SkillshotAbility } from './defs';
 import { World, attackSpeedOf, type SimEvent, type Unit, type WorldOptions } from './world';
 
 const STEP = 1 / TICK_RATE;
@@ -8,7 +8,7 @@ const W = WAYFINDER.abilities.W as SkillshotAbility;
 const E = WAYFINDER.abilities.E as BlinkAbility;
 const R = WAYFINDER.abilities.R as SkillshotAbility;
 const MARK = W.onHit!.mark!;
-const PASSIVE = WAYFINDER.passive!;
+const PASSIVE = WAYFINDER.passive as AbilityHitAttackSpeedPassive;
 
 function setup(enemies: { x: number; y: number }[], options?: WorldOptions) {
   const world = new World(options);

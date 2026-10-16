@@ -1,5 +1,5 @@
 import type { Vec } from '../sim/math';
-import type { GameView, PlayerCommand, Projectile, SimEvent, Unit } from '../sim/world';
+import type { GameView, PlayerCommand, Projectile, Shadow, SimEvent, Unit } from '../sim/world';
 
 /**
  * Where the game state comes from. Offline it is a local World; online it is a mirror
@@ -16,5 +16,6 @@ export interface Session {
   update(dt: number): SimEvent[];
   renderPos(u: Unit): Vec;
   projectilePos(p: Projectile): Vec;
+  shadowPos(s: Shadow): Vec;
   status(): string;
 }

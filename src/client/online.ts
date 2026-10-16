@@ -8,8 +8,8 @@ import {
   type Snapshot,
   type Welcome,
 } from '../net/protocol';
-import { clamp, dist, lerpVec, type Vec } from '../sim/math';
-import type { GameView, PlayerCommand, Projectile, SimEvent, Unit } from '../sim/world';
+import { clamp, dist, lerpVec, normalize, sub, type Vec } from '../sim/math';
+import type { GameView, PlayerCommand, Projectile, Shadow, SimEvent, Unit } from '../sim/world';
 import { CosmeticMissiles } from './cosmetic';
 import { Predictor } from './prediction';
 import type { Session } from './session';
@@ -27,17 +27,28 @@ const WELCOME_TIMEOUT_MS = 5000;
 /** Idle clients still ping this often so the prediction offset tracks latency changes. */
 const CALIBRATE_SECONDS = 1;
 /** Your own events that prediction shows instantly; the server's later copies are dropped. */
-const PREDICTED_EVENTS = new Set<SimEvent['type']>(['attackStart', 'attackFired', 'attackCanceled', 'castStart', 'castFired', 'blink']);
+const PREDICTED_EVENTS = new Set<SimEvent['type']>([
+  'attackStart',
+  'attackFired',
+  'attackCanceled',
+  'castStart',
+  'castFired',
+  'blink',
+  'swap',
+  'slash',
+]);
 
 interface Frame {
   tick: number;
   units: Map<number, Vec>;
   projectiles: Map<number, Vec>;
+  shadows: Map<number, Vec>;
 }
 
 class MirrorView implements GameView {
   units = new Map<number, Unit>();
   projectiles: Projectile[] = [];
+  shadows: Shadow[] = [];
 
   isAlive(u: Unit): boolean {
     return u.respawnIn <= 0;
@@ -69,11 +80,12 @@ export class OnlineSession implements Session {
   private predictor: Predictor | null = null;
   private readonly cosmetic = new CosmeticMissiles();
   private serverProjectiles: Projectile[] = [];
+  private serverShadows: Shadow[] = [];
   private calibrateIn = 0;
 
-  static async connect(endpoint: string, practice: boolean, predict = true): Promise<OnlineSession> {
+  static async connect(endpoint: string, practice: boolean, predict = true, champ?: string): Promise<OnlineSession> {
     const client = new Client(endpoint);
-    const options: JoinOptions = practice ? { practice: true } : {};
+    const options: JoinOptions = practice ? { practice: true, champ } : { champ };
     const room = practice ? await client.create(ROOM_NAME, options) : await client.joinOrCreate(ROOM_NAME, options);
     const session = new OnlineSession(room, practice, predict);
     await session.welcomed;
@@ -155,6 +167,7 @@ export class OnlineSession implements Session {
     }
     this.cosmetic.update(dt, this.view.units.values(), (u) => this.renderPos(u));
     this.showProjectiles();
+    this.showShadows();
     return ready;
   }
 
@@ -164,6 +177,11 @@ export class OnlineSession implements Session {
       if (predicted) return predicted;
     }
     return this.interpolate(this.from?.units.get(u.id), this.to?.units.get(u.id)) ?? u.pos;
+  }
+
+  shadowPos(s: Shadow): Vec {
+    if (this.predict && s.ownerId === this.playerId) return s.pos; // predicted, already current
+    return this.interpolate(this.from?.shadows.get(s.id), this.to?.shadows.get(s.id)) ?? s.pos;
   }
 
   projectilePos(p: Projectile): Vec {
@@ -191,16 +209,26 @@ export class OnlineSession implements Session {
     this.latestTick = s.tick;
     this.view.units = new Map(s.units.map((u) => [u.id, fromUnitSnapshot(u)]));
     this.serverProjectiles = s.projectiles;
+    this.serverShadows = s.shadows;
     this.showProjectiles();
     this.frames.push({
       tick: s.tick,
       units: new Map(s.units.map((u) => [u.id, u.pos])),
       projectiles: new Map(s.projectiles.map((p) => [p.id, p.pos])),
+      shadows: new Map(s.shadows.map((sh) => [sh.id, sh.pos])),
     });
     if (this.frames.length > MAX_FRAMES) this.frames.shift();
     for (const event of s.events) this.pending.push({ tick: s.tick, event });
     this.predictor?.onSnapshot(s);
     this.showPrediction();
+    this.showShadows();
+  }
+
+  /** Others' shadows from snapshots; yours from the prediction, so swaps land where you see them. */
+  private showShadows(): void {
+    const own = this.predict && this.predictor ? this.predictor.shadows() : [];
+    const others = this.serverShadows.filter((sh) => !(this.predict && sh.ownerId === this.playerId));
+    this.view.shadows = [...others, ...own];
   }
 
   private isOwnPredicted(event: SimEvent): boolean {
@@ -215,7 +243,14 @@ export class OnlineSession implements Session {
       this.cosmetic.attack(me, event.targetId, this.renderPos(me));
     } else if (event.type === 'castFired') {
       const ability = me.def.abilities[event.slot];
-      if (ability?.kind === 'skillshot') this.cosmetic.skillshot(me, event.slot, ability, this.renderPos(me), event.dir);
+      if (ability?.kind !== 'skillshot') return;
+      this.cosmetic.skillshot(me, event.slot, ability, this.renderPos(me), event.dir);
+      // Your shadows throw their copies at the same point.
+      if (!me.def.shadowMimics?.includes(event.slot)) return;
+      for (const sh of this.predictor?.shadows() ?? []) {
+        const dir = normalize(sub(event.target, sh.pos));
+        this.cosmetic.skillshot(me, event.slot, ability, sh.pos, dir.x || dir.y ? dir : event.dir, true);
+      }
     }
   }
 

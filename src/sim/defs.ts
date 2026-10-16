@@ -39,6 +39,8 @@ export interface SkillshotAbility extends AbilityBase {
   damage: number;
   /** True: stops on the first enemy. False: passes through, hitting each enemy once. */
   stopsAtFirstHit: boolean;
+  /** Damage to each enemy after the first, for piercing missiles (default: same as `damage`). */
+  subsequentDamage?: number;
   onHit?: OnAbilityHit;
 }
 
@@ -50,8 +52,53 @@ export interface BlinkAbility extends AbilityBase {
   bolt?: { range: number; speed: number; damage: number };
 }
 
-/** Every ability kind. New kinds (dash, shield, ...) get added to this union. */
-export type AbilityDef = SkillshotAbility | BlinkAbility;
+/**
+ * Sends out a shadow that dashes to the target point and copies the caster's mimicked
+ * abilities from where it stands. Recasting swaps places with it, once.
+ */
+export interface ShadowAbility extends AbilityBase {
+  kind: 'shadow';
+  range: number;
+  dashSpeed: number;
+  duration: number;
+  /** Resource restored (once per cast) when the caster and a shadow hit the same enemy with one ability. */
+  sharedHitRefund: number;
+}
+
+/** Instant damage in a circle around the caster and each of its shadows; one hit per enemy per cast. */
+export interface AreaAbility extends AbilityBase {
+  kind: 'area';
+  radius: number;
+  damage: number;
+  /** Slow on enemies hit by a shadow's copy; the stronger amount when hit by two or more. */
+  shadowSlow?: { amount: number; enhancedAmount: number; duration: number };
+  /** Seconds off another ability's cooldown per enemy hit by the caster's own copy. */
+  cooldownRefund?: { slot: AbilitySlot; seconds: number };
+}
+
+/**
+ * Unit-targeted assassination: untargetable, a short wait, a dash to just behind the target,
+ * then a mark that detonates for a share of the damage dealt to it meanwhile. A shadow
+ * stays at the cast position, and recasting swaps with it, once.
+ */
+export interface DeathMarkAbility extends AbilityBase {
+  kind: 'deathMark';
+  /** Center to target edge. */
+  range: number;
+  dashTime: number;
+  /** How far past the target the dash ends. */
+  landBehind: number;
+  markDuration: number;
+  baseDamage: number;
+  /** Fraction of the damage dealt to the marked target that the detonation repeats. */
+  storedPct: number;
+  shadowDuration: number;
+  /** The swap recast is unavailable in the shadow's final seconds. */
+  recastCutoff: number;
+}
+
+/** Every ability kind. New kinds get added to this union. */
+export type AbilityDef = SkillshotAbility | BlinkAbility | ShadowAbility | AreaAbility | DeathMarkAbility;
 
 /** Each enemy hit by an ability grants a stack of bonus attack speed, refreshing the duration. */
 export interface AbilityHitAttackSpeedPassive {
@@ -63,7 +110,16 @@ export interface AbilityHitAttackSpeedPassive {
   duration: number;
 }
 
-export type PassiveDef = AbilityHitAttackSpeedPassive;
+/** Auto-attacks on a target below a health threshold deal a % of its max health, once per target per cooldown. */
+export interface ExecuteAttackPassive {
+  kind: 'executeAttacks';
+  name: string;
+  hpThreshold: number;
+  maxHpPct: number;
+  perTargetCooldown: number;
+}
+
+export type PassiveDef = AbilityHitAttackSpeedPassive | ExecuteAttackPassive;
 
 export interface ChampionDef {
   id: string;
@@ -74,7 +130,9 @@ export interface ChampionDef {
   /** Radians per second. LoL champions turn almost instantly, which is a big part of the snappy feel. */
   turnRate: number;
   maxHp: number;
+  /** Mana or energy, per `resource`. Ability costs (`manaCost`) spend it. */
   maxMana: number;
+  resource?: 'mana' | 'energy';
   hpRegen: number;
   manaRegen: number;
   /** Edge to edge, as in LoL: 550 reaches 550 + both radii (680 between centers at radius 65). */
@@ -88,6 +146,8 @@ export interface ChampionDef {
   attackProjectileSpeed: number;
   passive?: PassiveDef;
   abilities: Partial<Record<AbilitySlot, AbilityDef>>;
+  /** Abilities this champion's shadows copy when it casts them. */
+  shadowMimics?: AbilitySlot[];
 }
 
 /** The original prototype champion: a plain ranged attacker with one skillshot. */
@@ -194,7 +254,87 @@ export const WAYFINDER: ChampionDef = {
   },
 };
 
+/**
+ * A melee assassin whose kit mirrors Zed's mechanics (level 1, rank 1 numbers from the LoL
+ * wiki, with 63 AD and no bonus AD). Names are original; Riot's are trademarks.
+ */
+export const SHADEBLADE: ChampionDef = {
+  id: 'shadeblade',
+  name: 'Shadeblade',
+  radius: 65,
+  moveSpeed: 345,
+  turnRate: 25,
+  maxHp: 654,
+  maxMana: 200,
+  resource: 'energy',
+  hpRegen: 1.4, // 7 per 5 s
+  manaRegen: 10, // 50 energy per 5 s
+  attackRange: 125,
+  attackSpeed: 0.651,
+  windupPct: 0.19759,
+  attackDamage: 63,
+  attackProjectileSpeed: 0,
+  passive: { kind: 'executeAttacks', name: 'Prey on the Weak', hpThreshold: 0.5, maxHpPct: 0.05, perTargetCooldown: 10 },
+  shadowMimics: ['Q', 'E'],
+  abilities: {
+    Q: {
+      kind: 'skillshot',
+      name: 'Night Star',
+      cooldown: 6,
+      manaCost: 75,
+      castTime: 0.25,
+      range: 925,
+      speed: 1700,
+      width: 100,
+      damage: 80,
+      subsequentDamage: 48,
+      stopsAtFirstHit: false,
+    },
+    W: {
+      kind: 'shadow',
+      name: 'Echo Shadow',
+      cooldown: 20,
+      manaCost: 40,
+      castTime: 0,
+      range: 650,
+      dashSpeed: 2500,
+      duration: 5.25,
+      sharedHitRefund: 30,
+    },
+    E: {
+      kind: 'area',
+      name: 'Umbral Slash',
+      cooldown: 5,
+      manaCost: 40,
+      castTime: 0,
+      radius: 315,
+      damage: 70,
+      shadowSlow: { amount: 0.2, enhancedAmount: 0.3, duration: 1.5 },
+      cooldownRefund: { slot: 'W', seconds: 3 },
+    },
+    R: {
+      kind: 'deathMark',
+      name: 'Final Mark',
+      cooldown: 120,
+      manaCost: 0,
+      castTime: 0.6, // untargetable wait before the dash
+      range: 625,
+      dashTime: 0.35,
+      landBehind: 125,
+      markDuration: 3,
+      baseDamage: 0, // 100% bonus AD, and there is no bonus AD yet
+      storedPct: 0.25,
+      shadowDuration: 9,
+      recastCutoff: 1.25,
+    },
+  },
+};
+
 export const CHAMPIONS: Record<string, ChampionDef> = {
   [MARKSMAN.id]: MARKSMAN,
   [WAYFINDER.id]: WAYFINDER,
+  [SHADEBLADE.id]: SHADEBLADE,
 };
+
+/** Champions offered in champion select. */
+export const PLAYABLE = [WAYFINDER, SHADEBLADE];

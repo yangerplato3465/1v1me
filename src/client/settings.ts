@@ -1,4 +1,4 @@
-import { ABILITY_SLOTS, type AbilitySlot } from '../sim/defs';
+import { ABILITY_SLOTS, PLAYABLE, type AbilitySlot } from '../sim/defs';
 
 /**
  * LoL's three cast modes:
@@ -15,6 +15,8 @@ export const CAST_MODES: { value: CastMode; label: string; hint: string }[] = [
 ];
 
 export interface Settings {
+  /** Champion id from PLAYABLE. */
+  champion: string;
   /** Used by every slot without an override. */
   castMode: CastMode;
   /** Per-key overrides; null means "use the default". */
@@ -24,6 +26,7 @@ export interface Settings {
 const STORAGE_KEY = '1v1me.settings';
 
 export const DEFAULT_SETTINGS: Settings = {
+  champion: PLAYABLE[0].id,
   castMode: 'quickIndicator',
   slotCastModes: { Q: null, W: null, E: null, R: null },
 };
@@ -48,7 +51,8 @@ export function loadSettings(): Settings {
     const mode = saved.slotCastModes?.[slot];
     if (isCastMode(mode)) slotCastModes[slot] = mode;
   }
-  return { castMode: isCastMode(saved.castMode) ? saved.castMode : DEFAULT_SETTINGS.castMode, slotCastModes };
+  const champion = PLAYABLE.some((c) => c.id === saved.champion) ? saved.champion! : DEFAULT_SETTINGS.champion;
+  return { champion, castMode: isCastMode(saved.castMode) ? saved.castMode : DEFAULT_SETTINGS.castMode, slotCastModes };
 }
 
 export function saveSettings(settings: Settings): void {

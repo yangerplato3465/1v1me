@@ -25,6 +25,9 @@
       #menu.show-settings #settings { display: grid; }
       #menu.show-settings #main { display: none; }
       #main { display: grid; gap: 12px; }
+      #champions { display: flex; gap: 10px; justify-content: center; }
+      #menu #champions button { min-width: 0; flex: 1; padding: 10px 12px; border-color: #44515c; }
+      #menu #champions button[aria-checked="true"] { border-color: #c8aa6e; background: #1c3a28; }
       #settings h2 { margin: 0; color: #c8aa6e; text-align: center; }
       #settings label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; font-weight: 600; }
       #settings select {
@@ -43,6 +46,7 @@
     <div id="menu">
       <h1>1v1me</h1>
       <div id="main">
+        <div id="champions" role="radiogroup" aria-label="Champion"></div>
         <button data-mode="duel">Find a duel<small>Online 1v1 — open two tabs to test</small></button>
         <button data-mode="practice">Online practice<small>You vs the bot, on the server</small></button>
         <button data-mode="offline">Offline practice<small>No server needed</small></button>

@@ -9,6 +9,7 @@ export const COLORS = {
   hpAlly: 0x46d36b,
   hpEnemy: 0xe8424f,
   mana: 0x4aa3ff,
+  energy: 0xf2d16b,
   gold: 0xc8aa6e,
   windup: 0xff9f43,
   text: 0xf4f1e8,

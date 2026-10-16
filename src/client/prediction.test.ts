@@ -12,9 +12,9 @@ const STEP = 1 / TICK_RATE;
  * A server and one predicting client joined by a fake network. Each direction delays
  * messages by `latency(tick)` ticks; JSON round-tripping stands in for serialization.
  */
-function harness(latency: (tick: number) => number) {
+function harness(latency: (tick: number) => number, champ?: string) {
   const server = new Authority();
-  const { unitId } = server.join('me');
+  const { unitId } = server.join('me', false, champ);
   const dummy = server.join('dummy');
   const predictor = new Predictor(unitId, TICK_RATE);
   let now = 0;
@@ -115,4 +115,26 @@ describe('Predictor', () => {
     expect(dist(h.predicted(), me.spawn)).toBeLessThan(1e-6);
     expect(h.predictor.renderPos()).toEqual(h.predicted());
   });
+
+  it('predicts shadow swaps and the death-mark dash exactly on a steady connection', () => {
+    const h = harness(() => 4, 'shadeblade');
+    h.run(TICK_RATE * 2);
+    const start = h.predicted();
+    h.corrections.length = 0;
+
+    h.issue({ type: 'cast', slot: 'W', target: { x: start.x + 600, y: start.y } }); // shadow 600 toward the dummy
+    h.run(10);
+    h.issue({ type: 'move', target: { x: start.x + 200, y: start.y - 200 } });
+    h.run(5);
+    h.issue({ type: 'cast', slot: 'W', target: start }); // swap: now 600 from the dummy
+    h.run(5);
+    h.issue({ type: 'cast', slot: 'E', target: start });
+    h.issue({ type: 'cast', slot: 'R', target: h.server.world.units.get(h.dummyId)!.pos });
+    h.run(TICK_RATE * 6); // after the dash he walks back to the earlier move target; let him arrive
+
+    expect(h.server.world.units.get(h.predictor.unit()!.id)!.cooldowns.R).toBeGreaterThan(0); // R really fired
+    expect(Math.max(...h.corrections)).toBeLessThan(1e-6);
+    expect(dist(h.predicted(), h.authoritative())).toBeLessThan(1e-6);
+  });
 });
+

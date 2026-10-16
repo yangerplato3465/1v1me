@@ -1,7 +1,7 @@
-import { StrafeBot } from '../sim/bot';
-import { TICK_RATE, WAYFINDER, WORLD_SIZE } from '../sim/defs';
+import { PracticeBot } from '../sim/bot';
+import { PLAYABLE, TICK_RATE, WAYFINDER, WORLD_SIZE, type ChampionDef } from '../sim/defs';
 import { dist, lerpVec, type Vec } from '../sim/math';
-import { World, type PlayerCommand, type Projectile, type SimEvent, type Unit } from '../sim/world';
+import { World, type PlayerCommand, type Projectile, type Shadow, type SimEvent, type Unit } from '../sim/world';
 import type { Session } from './session';
 
 const STEP = 1 / TICK_RATE;
@@ -13,18 +13,18 @@ export class OfflineSession implements Session {
   readonly view: World;
   readonly playerId: number;
   readonly tickRate = TICK_RATE;
-  readonly note = 'Offline practice: the bot strafes and throws its Q at you.';
-  private readonly bot: StrafeBot;
+  readonly note = 'Offline practice: the bot attacks, casts its kit and dodges some of your skillshots.';
+  private readonly bot: PracticeBot;
   private readonly prev = new Map<number, Vec>();
   private acc = 0;
 
-  constructor() {
+  constructor(champ: ChampionDef = PLAYABLE[0]) {
     const world = new World();
-    const player = world.addUnit(WAYFINDER, 'blue', { x: 700, y: WORLD_SIZE.height / 2 });
+    const player = world.addUnit(champ, 'blue', { x: 700, y: WORLD_SIZE.height / 2 });
     const enemy = world.addUnit(WAYFINDER, 'red', { x: WORLD_SIZE.width - 700, y: WORLD_SIZE.height / 2 });
     this.view = world;
     this.playerId = player.id;
-    this.bot = new StrafeBot(world, enemy.id, player.id);
+    this.bot = new PracticeBot(world, enemy.id, player.id);
   }
 
   send(cmd: PlayerCommand): void {
@@ -52,6 +52,10 @@ export class OfflineSession implements Session {
 
   projectilePos(p: Projectile): Vec {
     return lerpVec(p.prev, p.pos, this.acc / STEP);
+  }
+
+  shadowPos(s: Shadow): Vec {
+    return dist(s.prev, s.pos) < SNAP_DISTANCE ? lerpVec(s.prev, s.pos, this.acc / STEP) : s.pos;
   }
 
   status(): string {

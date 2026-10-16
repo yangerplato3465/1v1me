@@ -1,6 +1,6 @@
 import { fromUnitSnapshot, type CommandMessage, type Snapshot } from '../net/protocol';
 import { add, len, lerpVec, scale, sub, type Vec } from '../sim/math';
-import { World, type PlayerCommand, type SimEvent, type Unit } from '../sim/world';
+import { World, type PlayerCommand, type Shadow, type SimEvent, type Unit } from '../sim/world';
 
 /** Corrections bigger than this (respawns, long desyncs) snap instead of blending. */
 const SNAP_DISTANCE = 150;
@@ -81,6 +81,11 @@ export class Predictor {
     return this.world?.units.get(this.playerId) ?? null;
   }
 
+  /** Your shadows as predicted, so a swap lands where you see the shadow. */
+  shadows(): Shadow[] {
+    return this.world?.shadows ?? [];
+  }
+
   update(dt: number): void {
     const decay = Math.exp(-CORRECTION_DECAY * dt);
     this.correction = scale(this.correction, decay);
@@ -135,6 +140,9 @@ export class Predictor {
       world.units.set(unit.id, unit);
     }
     world.units.get(this.playerId)!.order = structuredClone(s.you.order);
+    // Your shadows matter for your movement (swaps); others' are just scenery for the renderer.
+    world.shadows = structuredClone(s.shadows.filter((sh) => sh.ownerId === this.playerId));
+    world.reserveIds(Math.max(0, ...s.units.map((u) => u.id), ...s.shadows.map((sh) => sh.id), ...s.projectiles.map((p) => p.id)));
 
     // Replay unacknowledged commands from the server's tick up to "now" in server ticks.
     const offset = this.ticksAhead ?? 0;

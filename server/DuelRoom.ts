@@ -25,8 +25,9 @@ export class DuelRoom extends Room {
     }, TICK_RATE);
   }
 
-  onJoin(client: Client): void {
-    client.send(MSG.welcome, this.match.join(client.sessionId, this.practice));
+  onJoin(client: Client, options: JoinOptions = {}): void {
+    const champ = typeof options.champ === 'string' ? options.champ : undefined;
+    client.send(MSG.welcome, this.match.join(client.sessionId, this.practice, champ));
   }
 
   onLeave(client: Client): void {

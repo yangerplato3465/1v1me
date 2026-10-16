@@ -1,6 +1,6 @@
 import { Container, Graphics, Text } from 'pixi.js';
 import { clamp } from '../sim/math';
-import { ABILITY_SLOTS, type AbilitySlot } from '../sim/defs';
+import { ABILITY_SLOTS, type AbilityDef, type AbilitySlot } from '../sim/defs';
 import { attackSpeedOf, type Unit } from '../sim/world';
 import { COLORS, FONT, MONO } from './theme';
 
@@ -45,6 +45,21 @@ function label(size: number, opts: { color?: number; bold?: boolean; mono?: bool
 interface SlotLabels {
   key: Text;
   cooldown: Text;
+}
+
+function describeReach(a: AbilityDef): string {
+  switch (a.kind) {
+    case 'skillshot':
+      return a.range >= 5000 ? 'global' : `${a.range} range`;
+    case 'blink':
+      return `${a.range} blink`;
+    case 'shadow':
+      return `${a.range} shadow · recast to swap`;
+    case 'area':
+      return `${a.radius} radius`;
+    case 'deathMark':
+      return `${a.range} targeted · recast to swap`;
+  }
 }
 
 export class Hud {
@@ -111,8 +126,9 @@ export class Hud {
 
     const shownSlot = info.aiming ?? ABILITY_SLOTS.find((slot) => player.def.abilities[slot]);
     const shown = shownSlot && player.def.abilities[shownSlot];
-    const reach = !shown ? '' : shown.kind === 'blink' ? `${shown.range} blink` : shown.range >= 5000 ? 'global' : `${shown.range} range`;
-    this.abilityInfo.text = shown ? `${shownSlot} · ${shown.name} · ${reach} · ${shown.cooldown}s · ${shown.manaCost} mana` : '';
+    const reach = !shown ? '' : describeReach(shown);
+    const cost = shown && shown.manaCost > 0 ? ` · ${shown.manaCost} ${player.def.resource ?? 'mana'}` : '';
+    this.abilityInfo.text = shown ? `${shownSlot} · ${shown.name} · ${reach} · ${shown.cooldown}s${cost}` : '';
     this.abilityInfo.position.set(px + 16, py + 84);
 
     // Auto-attack timer: the orange segment is the windup, the rest is free to move.

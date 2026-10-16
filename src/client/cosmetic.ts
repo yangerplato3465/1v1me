@@ -27,7 +27,7 @@ export class CosmeticMissiles {
     } satisfies HomingProjectile);
   }
 
-  skillshot(owner: Unit, slot: SkillshotProjectile['slot'], ability: SkillshotAbility, from: Vec, dir: Vec): void {
+  skillshot(owner: Unit, slot: SkillshotProjectile['slot'], ability: SkillshotAbility, from: Vec, dir: Vec, fromShadow = false): void {
     this.list.push({
       kind: 'skillshot',
       id: this.nextId--,
@@ -43,7 +43,10 @@ export class CosmeticMissiles {
       range: ability.range,
       travelled: 0,
       stopsAtFirstHit: ability.stopsAtFirstHit,
+      subsequentDamage: 0,
       hitIds: [],
+      castId: 0,
+      fromShadow,
     } satisfies SkillshotProjectile);
   }
 

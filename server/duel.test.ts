@@ -65,6 +65,16 @@ describe('DuelRoom', () => {
     await Promise.all([a.room.leave(), b.room.leave()]);
   });
 
+  it('spawns the champion picked in champion select, and falls back for unknown ids', async () => {
+    const zed = track(await client().create(ROOM_NAME, { practice: true, champ: 'shadeblade' }));
+    const { unitId } = await zed.welcome;
+    expect(unitIn(await until(zed.latest), unitId)!.champ).toBe('shadeblade');
+    const odd = track(await client().create(ROOM_NAME, { practice: true, champ: 'marksman' }));
+    const odd_ = await odd.welcome;
+    expect(unitIn(await until(odd.latest), odd_.unitId)!.champ).toBe('wayfinder');
+    await Promise.all([zed.room.leave(), odd.room.leave()]);
+  });
+
   it('drops malformed commands', async () => {
     const a = track(await client().create(ROOM_NAME, { practice: true }));
     const { unitId } = await a.welcome;

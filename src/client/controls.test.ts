@@ -14,7 +14,7 @@ function setup(castMode: CastMode, overrides: Partial<Settings['slotCastModes']>
   const canvas = document.createElement('canvas');
   document.body.appendChild(canvas);
   const sent: PlayerCommand[] = [];
-  const settings: Settings = { castMode, slotCastModes: { ...DEFAULT_SETTINGS.slotCastModes, ...overrides } };
+  const settings: Settings = { ...DEFAULT_SETTINGS, castMode, slotCastModes: { ...DEFAULT_SETTINGS.slotCastModes, ...overrides } };
   const controls = new Controls(canvas, world, camera, me.id, (c) => sent.push(c), () => {}, settings);
   window.dispatchEvent(new MouseEvent('mousemove', { clientX: 700, clientY: 400 }));
   const key = (type: 'keydown' | 'keyup', code: string) => window.dispatchEvent(new KeyboardEvent(type, { code }));
@@ -76,12 +76,13 @@ describe('cast modes', () => {
 describe('settings storage', () => {
   it('round-trips and falls back to defaults for junk', () => {
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
-    saveSettings({ castMode: 'quick', slotCastModes: { Q: 'normal', W: null, E: null, R: null } });
+    saveSettings({ champion: 'shadeblade', castMode: 'quick', slotCastModes: { Q: 'normal', W: null, E: null, R: null } });
     const loaded = loadSettings();
     expect(castModeFor(loaded, 'Q')).toBe('normal');
     expect(castModeFor(loaded, 'W')).toBe('quick');
+    expect(loaded.champion).toBe('shadeblade');
 
-    localStorage.setItem('1v1me.settings', '{"castMode":"turbo","slotCastModes":{"Q":42}}');
+    localStorage.setItem('1v1me.settings', '{"champion":"marksman","castMode":"turbo","slotCastModes":{"Q":42}}');
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
   });
 });

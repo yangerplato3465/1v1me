@@ -15,7 +15,7 @@ The start menu offers three modes:
 | Mode | What runs where |
 |---|---|
 | **Find a duel** | Online 1v1. Open two tabs or browsers to play yourself |
-| **Online practice** | You vs the bot, with the bot running on the server |
+| **Online practice** | You vs the practice bot, with the bot running on the server |
 | **Offline practice** | Everything in the browser, no server needed |
 
 Set `VITE_SERVER_URL` to point the client at a server elsewhere (default: this host on
@@ -85,6 +85,41 @@ magic damage are treated the same.
 Prediction covers the blink and your casts. Hits, marks, cooldown refunds, mana refunds
 and passive stacks come from the server.
 
+## Champion: Shadeblade
+
+A melee assassin whose kit mirrors **Zed's** (level-1 / rank-1 numbers from the LoL wiki,
+63 AD, no bonus AD). It uses **energy** (200, +10/s) instead of mana.
+
+| Key | Ability | What it does |
+|---|---|---|
+| Passive | Prey on the Weak | Attacks on a target under 50% health add 5% of its max health; once per 10 s per target |
+| Q | Night Star | 925-range shuriken that pierces: 80 to the first enemy, 48 to the rest |
+| W | Echo Shadow | A shadow dashes up to 650 away and copies Q and E for 5.25 s. Recast: swap places with it (once). Hitting an enemy with both his and a shadow's copy of one ability refunds 30 energy |
+| E | Umbral Slash | Instant 315-radius slash around him and each shadow; 70 to each enemy once. Shadow hits slow 20% (30% if hit twice) for 1.5 s; each champion hit by his own slash takes 3 s off W |
+| R | Final Mark | Target an enemy within 625: untargetable, 0.6 s later dash just behind them. The mark detonates after 3 s for 25% of the damage he dealt meanwhile. A shadow stays at the start; recast swaps back to it |
+
+Pick the champion on the start page. Prediction covers his shadow placement, swaps and the
+R dash; slows, the mark, refunds and damage come from the server.
+
+## Practice bot
+
+`src/sim/bot.ts` plays any champion, deciding about 8 times a second through the same
+commands a player sends:
+
+- **Auto-attacks.** Ranged, it orb-walks: attacks when its timer is up, repositions to
+  about 90% of its range during the backswing, and never cancels its own windup. Melee, it
+  chases and swings.
+- **Abilities, by kind.** Skillshots are aimed with lead on your movement plus some random
+  error. A global ult is saved to finish you. It blinks away when low and you're close, or
+  in to finish. Shadow champions set up the shadow before Q/E so the copies join in, slash
+  when you're in reach, death-mark when you're low or the combo is ready, and swap to
+  escape or chase.
+- **Dodging.** It sidesteps your skillshots (from the cast telegraph or the missile) after
+  a 0.25 s reaction, but only tries 60% of the time, and blinks if walking is too slow.
+
+Tune it with `BotOptions` (reaction, dodge chance, aim error, lead). The bot plays
+Wayfinder.
+
 ## Tuning the feel
 
 - **Attack windup.** Each auto-attack spends `windupPct` of its period winding up (LoL's
@@ -97,8 +132,12 @@ and passive stacks come from the server.
   from the caster's center.
 - **Abilities.** Champions have Q/W/E/R slots holding data-driven abilities: `skillshot`
   (stops at the first enemy or pierces, with on-hit effects such as cooldown refunds and
-  marks) and `blink` (with an optional homing bolt). Casts root the caster for their cast
-  time. Enemy skillshot casts are shown on the floor so you can dodge them.
+  marks), `blink` (with an optional homing bolt), `shadow` (a placeable copy that mimics
+  chosen abilities and can be swapped with), `area` (instant circle around the caster and
+  its shadows) and `deathMark` (unit-targeted dash and delayed detonation). Casts root
+  the caster for their cast time; abilities with no cast time are instant. Statuses cover
+  marks, attack-speed stacks, slows and untargetability. Enemy skillshot casts, including
+  their shadows' copies, are shown on the floor so you can dodge them.
 - **Tilted camera.** The ground layer is squashed vertically (`TILT`) to fake LoL's angled
   camera, while units stay upright.
 
@@ -110,7 +149,7 @@ All numbers are in [`src/sim/defs.ts`](src/sim/defs.ts).
 src/sim/      pure game rules (no DOM/Pixi), shared by server and client
   world.ts    units, orders, attacks, abilities, projectiles, fixed-step update
   defs.ts     champions and abilities, tick rate, map size
-  bot.ts      practice opponent that issues normal commands
+  bot.ts      practice bot: plays any champion through normal commands (see below)
 src/net/      wire protocol (messages, snapshots, validation) and the Authority (server game logic)
 src/client/   PixiJS rendering, camera, input, HUD
   session.ts  where state comes from: OfflineSession (local World) or OnlineSession (server)
