@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { TICK_RATE, WAYFINDER, type AbilityHitAttackSpeedPassive, type BlinkAbility, type SkillshotAbility } from './defs';
+import { TICK_RATE, WAYFINDER, atRank, type AbilityHitAttackSpeedPassive, type BlinkAbility, type SkillshotAbility } from './defs';
 import { World, attackSpeedOf, type SimEvent, type Unit, type WorldOptions } from './world';
 
 const STEP = 1 / TICK_RATE;
+/** Values at rank 1: these units start with every ability at rank 1 (World.addUnit's sandbox default). */
+const r1 = (v: Parameters<typeof atRank>[0]) => atRank(v, 1);
 const Q = WAYFINDER.abilities.Q as SkillshotAbility;
 const W = WAYFINDER.abilities.W as SkillshotAbility;
 const E = WAYFINDER.abilities.E as BlinkAbility;
@@ -42,10 +44,10 @@ describe('Wayfinder Q (Arcane Bolt)', () => {
     world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: foes[0].pos });
     const hits = damageTo(run(world, 1), foes[0]);
 
-    expect(hits).toEqual([expect.objectContaining({ source: 'Q', amount: Q.damage, detonation: false })]);
+    expect(hits).toEqual([expect.objectContaining({ source: 'Q', amount: r1(Q.damage) + Q.adRatio! * WAYFINDER.attackDamage, detonation: false })]);
     expect(me.cooldowns.W).toBeCloseTo(5 - 1 - 1.5, 3);
     expect(me.cooldowns.E).toBeCloseTo(10 - 1 - 1.5, 3);
-    expect(me.cooldowns.Q).toBeCloseTo(Q.cooldown - 1 - 1.5, 3);
+    expect(me.cooldowns.Q).toBeCloseTo(r1(Q.cooldown) - 1 - 1.5, 3);
     expect(stacksOf(me)).toBe(1);
     expect(attackSpeedOf(me)).toBeCloseTo(WAYFINDER.attackSpeed * (1 + PASSIVE.perStack));
   });
@@ -65,7 +67,7 @@ describe('Wayfinder W (Rune Orb)', () => {
     const hits = damageTo(run(world, 0.8), foes[0]);
     expect(hits.map((h) => [h.amount, h.detonation])).toEqual([
       [WAYFINDER.attackDamage, false],
-      [MARK.detonateDamage, true],
+      [r1(MARK.detonateDamage), true],
     ]);
     expect(markOn(foes[0])).toBeUndefined();
     expect(me.mana).toBeCloseTo(manaBefore + WAYFINDER.manaRegen * 0.8, 3);
@@ -83,8 +85,8 @@ describe('Wayfinder W (Rune Orb)', () => {
       ['Q', false],
       ['Q', true],
     ]);
-    const spent = W.manaCost + Q.manaCost;
-    const refund = MARK.abilityManaRefund + Q.manaCost;
+    const spent = r1(W.manaCost) + r1(Q.manaCost);
+    const refund = MARK.abilityManaRefund + r1(Q.manaCost);
     expect(me.mana).toBeCloseTo(100 - spent + refund + WAYFINDER.manaRegen * 1.2, 3);
   });
 
@@ -107,7 +109,7 @@ describe('Wayfinder E (Phase Step)', () => {
     expect(events.some((e) => e.type === 'blink')).toBe(true);
 
     const later = [...events, ...run(world, 0.5)];
-    expect(damageTo(later, foes[0])).toEqual([expect.objectContaining({ source: 'E', amount: E.bolt!.damage })]);
+    expect(damageTo(later, foes[0])).toEqual([expect.objectContaining({ source: 'E', amount: r1(E.bolt!.damage) })]);
     expect(damageTo(later, foes[1])).toHaveLength(0);
   });
 
@@ -121,14 +123,14 @@ describe('Wayfinder E (Phase Step)', () => {
   it('prefers a marked enemy over a closer one, detonating the mark and refunding mana', () => {
     const { world, me, foes } = setup([{ x: 1250, y: 800 }, { x: 1600, y: 800 }]);
     const [near, marked] = foes;
-    marked.statuses.push({ kind: 'mark', sourceId: me.id, remaining: MARK.duration, effect: MARK });
+    marked.statuses.push({ kind: 'mark', sourceId: me.id, remaining: MARK.duration, damage: r1(MARK.detonateDamage), manaRefund: MARK.abilityManaRefund });
     me.mana = 200;
     world.issue({ type: 'cast', unitId: me.id, slot: 'E', target: { x: 2400, y: 800 } });
     const events = run(world, 0.8);
 
     expect(damageTo(events, near)).toHaveLength(0);
-    expect(damageTo(events, marked).map((h) => h.amount)).toEqual([E.bolt!.damage, MARK.detonateDamage]);
-    expect(me.mana).toBeCloseTo(200 - E.manaCost + MARK.abilityManaRefund + E.manaCost + WAYFINDER.manaRegen * 0.8, 3);
+    expect(damageTo(events, marked).map((h) => h.amount)).toEqual([r1(E.bolt!.damage), r1(MARK.detonateDamage)]);
+    expect(me.mana).toBeCloseTo(200 - r1(E.manaCost) + MARK.abilityManaRefund + r1(E.manaCost) + WAYFINDER.manaRegen * 0.8, 3);
   });
 
   it('fires no bolt when no enemy is in range', () => {
@@ -149,7 +151,7 @@ describe('Wayfinder R (Skyline Barrage)', () => {
     expect(me.pos).toEqual({ x: 500, y: 800 });
 
     const events = run(world, 2.5);
-    for (const foe of foes) expect(damageTo(events, foe).map((h) => h.amount)).toEqual([R.damage]);
+    for (const foe of foes) expect(damageTo(events, foe).map((h) => h.amount)).toEqual([r1(R.damage)]);
     expect(stacksOf(me)).toBe(2);
   });
 });

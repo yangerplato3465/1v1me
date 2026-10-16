@@ -25,8 +25,26 @@ export const MONO = 'ui-monospace, Menlo, Consolas, monospace';
 export const teamColor = (team: Team): number => (team === 'blue' ? COLORS.blue : COLORS.red);
 export const teamLight = (team: Team): number => (team === 'blue' ? COLORS.blueLight : COLORS.redLight);
 
-/** Visual body size. The hitbox (def.radius, 65 like LoL) is wider than the drawn body, as in LoL. */
-export const bodyRadius = (def: ChampionDef): number => def.radius * (def.kind === 'turret' ? 0.6 : 0.55);
+/**
+ * How tall units are drawn, in world units. LoL lists Ezreal's selection height as 170, so
+ * champions stand that tall next to their 65 hitbox radius and 550-1200 ranges. Minions
+ * stand about 100 and turrets about 450, in LoL's proportions.
+ */
+export const MODEL_HEIGHT = { champion: 170, minion: 100, turret: 450 };
+
+/** Each figure's height in units of its bodyRadius, as drawn in renderer.ts. */
+const HEIGHT_IN_RADII = { champion: 2.65, minion: 2.3, turret: 5.9 };
+/** Hitbox radius of the reference unit of each kind (melee minion for minions). */
+const REFERENCE_RADIUS = { champion: 65, minion: 48, turret: 88.4 };
+
+/**
+ * Visual body size. The drawn body is narrower than the hitbox (def.radius), as in LoL;
+ * bigger hitboxes (the siege minion) draw proportionally bigger.
+ */
+export const bodyRadius = (def: ChampionDef): number => {
+  const kind = def.kind ?? 'champion';
+  return (MODEL_HEIGHT[kind] / HEIGHT_IN_RADII[kind]) * (def.radius / REFERENCE_RADIUS[kind]);
+};
 
 /** How far above its feet a unit is drawn (and clickable), in units of bodyRadius. */
 export const bodyHeight = (def: ChampionDef): number => (def.kind === 'turret' ? 5.2 : def.kind === 'minion' ? 2.4 : 3);

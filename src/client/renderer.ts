@@ -1,6 +1,6 @@
 import { Container, Graphics, Text } from 'pixi.js';
 import { FOUNTAINS, FOUNTAIN_RADIUS, LANE_Y, TURRET_POSITIONS, WORLD_SIZE } from '../sim/defs';
-import { add, angleOf, dist, normalize, scale, sub, type Vec } from '../sim/math';
+import { add, angleOf, dist, fromAngle, normalize, scale, sub, type Vec } from '../sim/math';
 import {
   isChampion,
   isMinion,
@@ -13,12 +13,16 @@ import {
   type Team,
   type Unit,
 } from '../sim/world';
-import { TILT, type Camera } from './camera';
+import type { Camera } from './camera';
 import type { Controls, MarkerKind } from './controls';
 import { COLORS, FONT, bodyHeight, bodyRadius, hpColor, teamColor, teamLight } from './theme';
 
 /** How high above the floor missiles fly, in world units. */
-const MISSILE_HEIGHT = 42;
+const MISSILE_HEIGHT = 90;
+/** Turret shots fly this much higher, from the crystal at the top of the tower. */
+const TURRET_SHOT_LIFT = 230;
+/** Combat text starts this high above a unit's feet. */
+const FLOAT_HEIGHT = 220;
 const MARKER_SECONDS = 0.45;
 const SPARK_SECONDS = 0.3;
 const FLOAT_SECONDS = 0.9;
@@ -71,7 +75,8 @@ export type ProjectilePos = (p: Projectile) => Vec;
 export type ShadowPos = (s: Shadow) => Vec;
 
 export class Renderer {
-  /** World-space layer squashed by the camera tilt: floor, rings, indicators. */
+  /** World-space layer, turned and squashed by the camera: floor, rings, indicators. */
+  private readonly groundView = new Container();
   private readonly ground = new Container();
   private readonly groundFx = new Graphics();
   /** Screen-space, upright units depth-sorted by world y. */
@@ -95,7 +100,8 @@ export class Renderer {
   ) {
     this.ground.addChild(drawMap(), this.groundFx);
     this.unitLayer.sortableChildren = true;
-    stage.addChild(this.ground, this.unitLayer, this.air, this.texts);
+    this.groundView.addChild(this.ground);
+    stage.addChild(this.groundView, this.unitLayer, this.air, this.texts);
   }
 
   addMarker(pos: Vec, kind: MarkerKind): void {
@@ -148,6 +154,13 @@ export class Renderer {
         this.slashes.push({ pos: ev.pos, radius: ev.radius, color: u ? teamLight(u.team) : COLORS.text, age: 0 });
         break;
       }
+      case 'levelUp': {
+        const u = this.world.units.get(ev.unitId);
+        if (!u) break;
+        if (ev.unitId === this.playerId) this.float(`LEVEL ${ev.level}`, u.pos, COLORS.gold, 28);
+        this.slashes.push({ pos: { ...u.pos }, radius: u.def.radius + 60, color: COLORS.gold, age: 0 });
+        break;
+      }
       case 'deathMarked': {
         const u = this.world.units.get(ev.unitId);
         if (u) this.float('MARKED', u.pos, DEATH_MARK_COLOR, 26);
@@ -189,7 +202,7 @@ export class Renderer {
   }
 
   render(renderPos: RenderPos, projectilePos: ProjectilePos, shadowPos: ShadowPos, dt: number): void {
-    this.camera.applyTo(this.ground);
+    this.camera.applyTo(this.groundView, this.ground);
     this.drawGroundFx(renderPos, shadowPos, dt);
     this.drawUnits(renderPos, dt);
     this.drawShadows(shadowPos);
@@ -236,20 +249,6 @@ export class Renderer {
       }
       if (u.statuses.some((st) => st.kind === 'slow')) {
         g.circle(p.x, p.y, u.def.radius + 2).fill({ color: SLOW_COLOR, alpha: 0.18 });
-      }
-
-      // Telegraph enemy casts so they can be read and dodged, including their shadows' copies.
-      const casting = u.cast && u.def.abilities[u.cast.slot];
-      if (u.cast && casting?.kind === 'skillshot' && u.id !== this.playerId) {
-        const k = 1 - u.cast.remaining / u.cast.total;
-        drawLane(g, p, u.cast.dir, casting.range, casting.width, COLORS.red, 0.08 + 0.2 * k, 0.5);
-        if (u.def.shadowMimics?.includes(u.cast.slot)) {
-          for (const sh of this.world.shadows.filter((x) => x.ownerId === u.id)) {
-            const sp = shadowPos(sh);
-            const d = normalize(sub(u.cast.target, sp));
-            if (d.x || d.y) drawLane(g, sp, d, casting.range, casting.width, COLORS.red, 0.06 + 0.15 * k, 0.35);
-          }
-        }
       }
     }
 
@@ -351,7 +350,7 @@ export class Renderer {
       const s = this.camera.worldToScreen(p);
       view.root.position.set(s.x, s.y);
       view.root.zIndex = p.y;
-      view.update(u, this.world.isAlive(u), this.camera.zoom, dt);
+      view.update(u, this.world.isAlive(u), this.camera, dt);
     }
   }
 
@@ -410,7 +409,7 @@ export class Renderer {
       const light = teamLight(p.team);
       const owner = this.world.units.get(p.ownerId);
       if (p.kind === 'homing' && owner && isStructure(owner)) {
-        s.y -= 60 * z; // fired from high up on the tower
+        s.y -= TURRET_SHOT_LIFT * z;
         g.circle(s.x, s.y, 26 * z).fill({ color, alpha: 0.35 });
         g.circle(s.x, s.y, 13 * z).fill(0xffffff);
         continue;
@@ -427,7 +426,7 @@ export class Renderer {
         g.circle(s.x, s.y, (ability ? 9 : 7) * z).fill(ability ? 0xffffff : light);
         continue;
       }
-      const d = normalize({ x: p.dir.x, y: p.dir.y * TILT });
+      const d = this.camera.dirToScreen(p.dir);
       if (p.slot === 'W') {
         // A slow, fat orb.
         g.circle(s.x, s.y, p.width * 0.35 * z).fill({ color: MARK_COLOR, alpha: 0.3 });
@@ -476,7 +475,7 @@ export class Renderer {
         return false;
       }
       const s = this.camera.worldToScreen(f.pos);
-      f.text.position.set(s.x + f.drift * t, s.y - 125 * z - 50 * t);
+      f.text.position.set(s.x + f.drift * t, s.y - FLOAT_HEIGHT * z - 50 * t);
       f.text.alpha = 1 - t * t;
       f.text.scale.set(t < 0.1 ? 1 + (0.1 - t) * 4 : 1);
       return true;
@@ -562,7 +561,7 @@ interface View {
   readonly root: Container;
   pop: number;
   flash: number;
-  update(unit: Unit, alive: boolean, zoom: number, dt: number): void;
+  update(unit: Unit, alive: boolean, camera: Camera, dt: number): void;
 }
 
 class UnitView implements View {
@@ -572,7 +571,10 @@ class UnitView implements View {
   private readonly body = new Graphics();
   private readonly flashBody = new Graphics();
   private readonly weapon = new Graphics();
+  /** Health bar and name: they stay the same size on screen at any zoom, like LoL's. */
+  private readonly overlay = new Container();
   private readonly bars = new Graphics();
+  private readonly level: Text;
   private readonly status: Text;
 
   constructor(unit: Unit, private readonly isPlayer: boolean) {
@@ -586,28 +588,38 @@ class UnitView implements View {
       style: { fontFamily: FONT, fontSize: 14, fontWeight: 'bold', fill: COLORS.text, stroke: { color: 0x000000, width: 3 } },
     });
     name.anchor.set(0.5, 1);
-    name.position.set(0, -r * 3.3 - 14);
+    name.position.set(0, -BAR_GAP_PX - 20);
     this.status = new Text({
       text: '',
       style: { fontFamily: FONT, fontSize: 20, fontWeight: 'bold', fill: COLORS.text, stroke: { color: 0x000000, width: 4 } },
     });
     this.status.anchor.set(0.5);
     this.status.position.set(0, -r * 1.2);
-    this.root.addChild(shadow, this.body, this.flashBody, this.weapon, this.bars, name, this.status);
+    this.overlay.position.set(0, -r * 2.7);
+    this.level = new Text({
+      text: '',
+      style: { fontFamily: FONT, fontSize: 12, fontWeight: 'bold', fill: COLORS.gold },
+    });
+    this.level.anchor.set(0.5);
+    this.overlay.addChild(this.bars, name, this.level);
+    this.root.addChild(shadow, this.body, this.flashBody, this.weapon, this.overlay, this.status);
   }
 
-  update(unit: Unit, alive: boolean, zoom: number, dt: number): void {
+  update(unit: Unit, alive: boolean, camera: Camera, dt: number): void {
+    const zoom = camera.zoom;
     const r = bodyRadius(unit.def);
     this.pop = Math.max(0, this.pop - dt * 6);
     this.flash = Math.max(0, this.flash - dt * 8);
     this.root.scale.set(zoom * (1 + this.pop * 0.1));
+    keepScreenSize(this.overlay, this.root);
+    keepScreenSize(this.status, this.root);
     this.root.alpha = !alive ? 0.3 : isUntargetable(unit) ? 0.35 : 1;
     this.flashBody.alpha = this.flash * 0.8;
     this.status.text = alive ? '' : unit.respawnIn.toFixed(1);
 
     // Facing, drawn as a bow arm. It pulls back during the windup and snaps forward on release.
     const w = this.weapon.clear();
-    const facing = angleOf({ x: Math.cos(unit.facing), y: Math.sin(unit.facing) * TILT });
+    const facing = angleOf(camera.dirToScreen(fromAngle(unit.facing)));
     const dir = { x: Math.cos(facing), y: Math.sin(facing) };
     const hand = { x: 0, y: -r * 1.25 };
     let reach = r * 1.4;
@@ -618,30 +630,44 @@ class UnitView implements View {
       color = COLORS.windup;
     }
     const end = add(hand, scale(dir, reach));
-    w.moveTo(hand.x, hand.y).lineTo(end.x, end.y).stroke({ width: 7, color, cap: 'round' });
+    w.moveTo(hand.x, hand.y).lineTo(end.x, end.y).stroke({ width: r * 0.18, color, cap: 'round' });
     if (unit.cast) {
       const k = 1 - unit.cast.remaining / unit.cast.total;
       const orb = add(hand, scale(dir, r * 0.9));
-      w.circle(orb.x, orb.y, 6 + 12 * k).fill({ color: teamLight(unit.team), alpha: 0.5 + 0.5 * k });
+      w.circle(orb.x, orb.y, r * (0.15 + 0.3 * k)).fill({ color: teamLight(unit.team), alpha: 0.5 + 0.5 * k });
     }
 
     const b = this.bars.clear();
+    this.level.visible = alive;
     if (!alive) return;
     const bw = 90;
     const bh = 10;
-    const by = -r * 3.3;
+    const by = -BAR_GAP_PX - bh - 4;
     b.roundRect(-bw / 2 - 2, by - 2, bw + 4, bh + 8, 3).fill({ color: 0x0b0b0b, alpha: 0.85 });
-    b.rect(-bw / 2, by, (bw * unit.hp) / unit.def.maxHp, bh).fill(hpColor(false, this.isPlayer));
-    for (let hp = 100; hp < unit.def.maxHp; hp += 100) {
-      b.rect(-bw / 2 + (bw * hp) / unit.def.maxHp, by, 1, bh).fill({ color: 0x000000, alpha: 0.5 });
+    const { maxHp, maxMana } = unit.stats;
+    b.rect(-bw / 2, by, (bw * unit.hp) / maxHp, bh).fill(hpColor(false, this.isPlayer));
+    for (let hp = 100; hp < maxHp; hp += 100) {
+      b.rect(-bw / 2 + (bw * hp) / maxHp, by, 1, bh).fill({ color: 0x000000, alpha: 0.5 });
     }
-    b.rect(-bw / 2, by + bh + 1, (bw * unit.mana) / unit.def.maxMana, 3).fill(unit.def.resource === 'energy' ? COLORS.energy : COLORS.mana);
+    if (maxMana > 0) b.rect(-bw / 2, by + bh + 1, (bw * unit.mana) / maxMana, 3).fill(unit.def.resource === 'energy' ? COLORS.energy : COLORS.mana);
+    // Level, in a box at the left end of the bar, like LoL.
+    b.roundRect(-bw / 2 - 24, by - 3, 20, bh + 8, 3).fill({ color: 0x0b0b0b, alpha: 0.9 }).stroke({ width: 1, color: COLORS.gold, alpha: 0.8 });
+    this.level.text = String(unit.level);
+    this.level.position.set(-bw / 2 - 14, by + bh / 2 + 1);
     // Passive attack-speed stacks as pips above the health bar.
     const stacks = unit.statuses.find((st) => st.kind === 'attackSpeed');
     if (stacks?.kind === 'attackSpeed') {
       for (let i = 0; i < stacks.stacks; i++) b.circle(-bw / 2 + 5 + i * 11, by - 7, 4).fill(COLORS.gold);
     }
   }
+}
+
+/** Gap in screen pixels between a unit's head and its health bar. */
+const BAR_GAP_PX = 6;
+
+/** Undoes the parent's zoom (and mirroring) so a health bar or label keeps its pixel size. */
+function keepScreenSize(child: Container, parent: Container): void {
+  child.scale.set(1 / parent.scale.x, 1 / parent.scale.y);
 }
 
 function drawBody(g: Graphics, r: number, main: number, light: number): void {
@@ -685,6 +711,7 @@ class MinionView implements View {
     this.draw(this.body, unit, teamColor(unit.team), teamLight(unit.team));
     this.draw(this.flashBody, unit, 0xffffff, 0xffffff);
     this.flashBody.alpha = 0;
+    this.bars.position.set(0, unit.def.id === 'minion-siege' ? -r * 1.7 : -r * 2.4);
     this.root.addChild(shadow, this.body, this.flashBody, this.bars);
   }
 
@@ -700,23 +727,24 @@ class MinionView implements View {
     g.roundRect(-r * 0.6, -r * 1.7, r * 1.2, r * 1.7, r * 0.5).fill(main).stroke(edge);
     g.circle(0, -r * 1.85, r * 0.45).fill(light).stroke(edge);
     if (unit.def.id === 'minion-caster') g.circle(r * 0.85, -r * 1.5, r * 0.28).fill({ color: light, alpha: 0.9 });
-    else g.moveTo(r * 0.6, -r * 0.6).lineTo(r * 1.15, -r * 1.6).stroke({ width: 3, color: 0xd9dde2, cap: 'round' });
+    else g.moveTo(r * 0.6, -r * 0.6).lineTo(r * 1.15, -r * 1.6).stroke({ width: r * 0.12, color: 0xd9dde2, cap: 'round' });
   }
 
-  update(unit: Unit, alive: boolean, zoom: number, dt: number): void {
-    const r = bodyRadius(unit.def);
+  update(unit: Unit, alive: boolean, camera: Camera, dt: number): void {
+    const zoom = camera.zoom;
     this.pop = Math.max(0, this.pop - dt * 6);
     this.flash = Math.max(0, this.flash - dt * 8);
     // Face the way it walks or swings.
-    const facesLeft = Math.cos(unit.facing) < 0;
+    const facesLeft = camera.dirToScreen(fromAngle(unit.facing)).x < 0;
     this.root.scale.set(zoom * (facesLeft ? -1 : 1) * (1 + this.pop * 0.08), zoom * (1 + this.pop * 0.08));
+    keepScreenSize(this.bars, this.root);
     this.root.alpha = alive ? 1 : 0;
     this.flashBody.alpha = this.flash * 0.8;
     const b = this.bars.clear();
-    const bw = unit.def.id === 'minion-siege' ? 64 : 48;
-    const by = -r * 2.75;
+    const bw = unit.def.id === 'minion-siege' ? 54 : 42;
+    const by = -BAR_GAP_PX - 5;
     b.rect(-bw / 2 - 1, by - 1, bw + 2, 7).fill({ color: 0x0b0b0b, alpha: 0.85 });
-    b.rect(-bw / 2, by, (bw * unit.hp) / unit.def.maxHp, 5).fill(hpColor(this.allied, false));
+    b.rect(-bw / 2, by, (bw * unit.hp) / unit.stats.maxHp, 5).fill(hpColor(this.allied, false));
   }
 }
 
@@ -740,14 +768,17 @@ class TurretView implements View {
     tower.poly([-r * 0.85, -r * 3.6, r * 0.85, -r * 3.6, r * 0.55, -r * 4.0, -r * 0.55, -r * 4.0]).fill(0x5d636b).stroke(edge);
     this.flashBody.poly([-r * 0.9, -r * 0.3, r * 0.9, -r * 0.3, r * 0.6, -r * 3.6, -r * 0.6, -r * 3.6]).fill(0xffffff);
     this.flashBody.alpha = 0;
+    this.bars.position.set(0, -r * (bodyHeight(unit.def) + 0.9));
     this.root.addChild(shadow, tower, this.flashBody, this.crystal, this.bars);
   }
 
-  update(unit: Unit, alive: boolean, zoom: number, dt: number): void {
+  update(unit: Unit, alive: boolean, camera: Camera, dt: number): void {
+    const zoom = camera.zoom;
     const r = bodyRadius(unit.def);
     this.pop = Math.max(0, this.pop - dt * 6);
     this.flash = Math.max(0, this.flash - dt * 8);
     this.root.scale.set(zoom);
+    keepScreenSize(this.bars, this.root);
     this.root.alpha = alive ? 1 : 0;
     this.flashBody.alpha = this.flash * 0.35;
 
@@ -759,9 +790,10 @@ class TurretView implements View {
 
     const b = this.bars.clear();
     const bw = 130;
-    const by = top - r * 1.3;
+    const by = -BAR_GAP_PX - 10;
     b.roundRect(-bw / 2 - 2, by - 2, bw + 4, 14, 3).fill({ color: 0x0b0b0b, alpha: 0.85 });
-    b.rect(-bw / 2, by, (bw * unit.hp) / unit.def.maxHp, 10).fill(hpColor(this.allied, false));
-    for (let hp = 1000; hp < unit.def.maxHp; hp += 1000) b.rect(-bw / 2 + (bw * hp) / unit.def.maxHp, by, 1, 10).fill({ color: 0x000000, alpha: 0.5 });
+    const maxHp = unit.stats.maxHp;
+    b.rect(-bw / 2, by, (bw * unit.hp) / maxHp, 10).fill(hpColor(this.allied, false));
+    for (let hp = 1000; hp < maxHp; hp += 1000) b.rect(-bw / 2 + (bw * hp) / maxHp, by, 1, 10).fill({ color: 0x000000, alpha: 0.5 });
   }
 }

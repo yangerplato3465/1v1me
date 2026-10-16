@@ -10,12 +10,19 @@ import {
   TURRET_POSITIONS,
   WAVES,
   WAYFINDER,
+  type ChampionDef,
 } from './defs';
-import { Lane, hasSiegeMinion } from './lane';
+import { Lane, MINION_ACQUISITION_RANGE, waveComposition, waveInterval } from './lane';
 import { dist } from './math';
-import { World, isMinion, type SimEvent, type Team, type Unit } from './world';
+import { CALL_SECONDS, World, isMinion, statsAt, type SimEvent, type Team, type Unit } from './world';
 
 const STEP = 1 / TICK_RATE;
+
+/** Changes a unit's stats for a test, keeping its level-based stats in step. */
+function tweak(u: Unit, changes: Partial<ChampionDef>): void {
+  u.def = { ...u.def, ...changes };
+  u.stats = statsAt(u.def, u.level);
+}
 
 function setup() {
   const world = new World();
@@ -38,25 +45,37 @@ const damageTo = (events: SimEvent[], u: Unit) =>
   events.filter((e): e is Extract<SimEvent, { type: 'damage' }> => e.type === 'damage' && e.targetId === u.id);
 
 describe('minion waves', () => {
-  it('spawns 3 melee and 3 casters per side, from the first wave on, every 30 s', () => {
+  it('walks a wave out single file at 0:30, one minion every 0.792 s: 3 melee, then 3 casters', () => {
     const { run, minions, lane } = setup();
     run(WAVES.firstAt - 0.1);
     expect(minions()).toHaveLength(0);
-    run(0.2);
-    for (const team of ['blue', 'red'] as Team[]) {
-      const wave = minions(team);
-      expect(wave.filter((m) => m.def === MELEE_MINION)).toHaveLength(3);
-      expect(wave.filter((m) => m.def === CASTER_MINION)).toHaveLength(3);
-      expect(wave.filter((m) => m.def === SIEGE_MINION)).toHaveLength(0);
-    }
-    run(WAVES.interval);
+    const spawned: { id: string; at: number; pos: { x: number; y: number } }[] = [];
+    const seen = new Set<number>();
+    run(6, () => {
+      for (const m of minions('blue')) if (!seen.has(m.id)) (seen.add(m.id), spawned.push({ id: m.def.id, at: lane.time, pos: { ...m.pos } }));
+    });
+    expect(spawned.map((s) => s.id)).toEqual(['minion-melee', 'minion-melee', 'minion-melee', 'minion-caster', 'minion-caster', 'minion-caster']);
+    for (let i = 1; i < spawned.length; i++) expect(spawned[i].at - spawned[i - 1].at).toBeCloseTo(WAVES.spawnSpacing, 1);
+    for (const s of spawned) expect(s.pos).toEqual(spawned[0].pos); // all from the same spot, in a line behind each other
+    expect(minions('red')).toHaveLength(6);
+    run(WAVES.interval[0][1]);
     expect(lane.waves).toBe(2);
   });
 
-  it('adds a siege minion every 3rd wave, every 2nd after 15:00 and every wave after 25:00', () => {
-    expect([1, 2, 3, 4, 5, 6].map((w) => hasSiegeMinion(w, 60))).toEqual([false, false, true, false, false, true]);
-    expect([1, 2, 3, 4].map((w) => hasSiegeMinion(w, 16 * 60))).toEqual([false, true, false, true]);
-    expect([1, 2, 3].map((w) => hasSiegeMinion(w, 26 * 60))).toEqual([true, true, true]);
+  it('follows LoL\'s wave schedule: siege from wave 3, faster waves and smaller waves later on', () => {
+    const ids = (time: number, since: number) => waveComposition(time, since).units.map((d) => d.id.replace('minion-', ''));
+    expect(ids(30, 1)).toEqual(['melee', 'melee', 'melee', 'caster', 'caster', 'caster']);
+    expect(ids(90, 3)).toEqual(['melee', 'melee', 'melee', 'siege', 'caster', 'caster', 'caster']);
+    expect(waveComposition(14 * 60, 2).siege).toBe(true); // every 2nd wave from 14:00…
+    expect(ids(14 * 60, 2)).toEqual(['melee', 'melee', 'siege', 'caster', 'caster', 'caster']); // …with one melee fewer
+    expect(waveComposition(25 * 60, 1).siege).toBe(true); // every wave from 25:00
+    expect(ids(30 * 60, 1)).toEqual(['melee', 'melee', 'siege', 'caster', 'caster']);
+    expect([0, 14 * 60, 30 * 60].map(waveInterval)).toEqual([30, 25, 20]);
+
+    const { run, lane, minions } = setup();
+    run(WAVES.firstAt + 60 + 6); // waves at 0:30, 1:00 and 1:30
+    expect(lane.waves).toBe(3);
+    expect(minions('blue').filter((m) => m.def === SIEGE_MINION)).toHaveLength(1);
   });
 
   it('march down the lane, meet in the middle and fight; the dead are gone for good', () => {
@@ -65,7 +84,7 @@ describe('minion waves', () => {
     const blueStart = Math.max(...minions('blue').map((m) => m.pos.x));
     run(4);
     expect(Math.max(...minions('blue').map((m) => m.pos.x))).toBeGreaterThan(blueStart + 1000);
-    run(20);
+    run(25);
     const deaths = events.filter((e) => e.type === 'death' && e.kind === 'minion');
     expect(deaths.length).toBeGreaterThan(0);
     for (const d of deaths) if (d.type === 'death') expect(world.units.has(d.unitId)).toBe(false);
@@ -84,32 +103,83 @@ describe('turret', () => {
     const melee = world.addUnit(MELEE_MINION, 'blue', at);
     const caster = world.addUnit(CASTER_MINION, 'blue', { x: at.x, y: at.y + 200 });
     const siege = world.addUnit(SIEGE_MINION, 'blue', { x: at.x, y: at.y - 200 });
-    for (const m of [melee, caster, siege]) m.def = { ...m.def, moveSpeed: 0, attackDamage: 0 }; // stand still, harmless
-    run(8);
+    for (const m of [melee, caster, siege]) tweak(m, { moveSpeed: 0, attackDamage: 0 }); // stand still, harmless
+    run(17); // siege first (8 shots), then melee (3), then caster (2)
     const shots = (u: Unit) => damageTo(events, u).filter((e) => e.sourceId === red.id).map((e) => e.amount);
-    expect(shots(melee)[0]).toBeCloseTo(477 * 0.45);
-    expect(shots(caster)[0]).toBeCloseTo(296 * 0.7);
-    expect(shots(siege)[0]).toBeCloseTo(912 * 0.14);
+    expect(shots(melee)[0]).toBeCloseTo(MELEE_MINION.maxHp * 0.45);
+    expect(shots(caster)[0]).toBeCloseTo(CASTER_MINION.maxHp * 0.7);
+    expect(shots(siege)[0]).toBeCloseTo(SIEGE_MINION.maxHp * 0.14);
     expect(world.units.has(melee.id)).toBe(false); // three shots
     expect(shots(melee)).toHaveLength(3);
   });
 
-  it('heats up on the same champion: +40% per consecutive shot, up to +120%', () => {
+  it('heats up on champions: +50% per shot, up to +150%, cooling off 5 s after its last champion shot', () => {
     const { world, run, turret, events } = setup();
     const red = turret('red');
     const diver = world.addUnit(WAYFINDER, 'blue', { x: red.pos.x - 400, y: red.pos.y });
-    diver.def = { ...diver.def, maxHp: 1e6 };
+    tweak(diver, { maxHp: 1e6 });
     diver.hp = 1e6;
     run(6.5);
     const shots = damageTo(events, diver).map((e) => e.amount);
-    expect(shots.slice(0, 5).map((d) => Math.round(d * 10) / 10)).toEqual([152, 212.8, 273.6, 334.4, 334.4]);
+    expect(shots.slice(0, 5)).toEqual([182, 273, 364, 455, 455]);
+
+    // Walk out, wait the heat off, walk back in: back to base damage.
+    diver.pos = { x: red.pos.x - 1500, y: red.pos.y };
+    run(6);
+    const before = damageTo(events, diver).length;
+    diver.pos = { x: red.pos.x - 400, y: red.pos.y };
+    run(1.5);
+    expect(damageTo(events, diver).map((e) => e.amount)[before]).toBe(182);
+  });
+
+  it('picks siege minions first, then melee, then casters, then champions, and keeps its target', () => {
+    const { world, run, turret } = setup();
+    const red = turret('red');
+    const near = { x: red.pos.x - 300, y: red.pos.y };
+    const champ = world.addUnit(WAYFINDER, 'blue', { x: near.x, y: near.y + 250 });
+    const caster = world.addUnit(CASTER_MINION, 'blue', { x: near.x + 100, y: near.y });
+    const siege = world.addUnit(SIEGE_MINION, 'blue', { x: near.x - 300, y: near.y - 200 });
+    for (const u of [champ, caster, siege]) tweak(u, { moveSpeed: 0, attackDamage: 0, maxHp: 1e6 });
+    for (const u of [champ, caster, siege]) u.hp = 1e6;
+    run(1);
+    expect(red.order).toEqual({ kind: 'attack', targetId: siege.id });
+    const melee = world.addUnit(MELEE_MINION, 'blue', { x: near.x + 50, y: near.y });
+    tweak(melee, { moveSpeed: 0, attackDamage: 0 });
+    run(1);
+    expect(red.order).toEqual({ kind: 'attack', targetId: siege.id }); // no switching to a new arrival
+  });
+
+  it('switches to a champion hurting an allied champion even with a skillshot; minions ignore skillshots', () => {
+    const { world, run, turret } = setup();
+    const red = turret('red');
+    const at = (dx: number, dy: number) => ({ x: red.pos.x + dx, y: red.pos.y + dy });
+    const target = world.addUnit(MELEE_MINION, 'blue', at(-300, 0)); // keeps the turret busy
+    const minion = world.addUnit(CASTER_MINION, 'red', at(-450, -650));
+    const bait = world.addUnit(MELEE_MINION, 'blue', at(-450, -450)); // keeps that minion busy
+    for (const m of [target, minion, bait]) tweak(m, { moveSpeed: 0, attackDamage: 0, maxHp: 1e6 });
+    for (const m of [target, minion, bait]) m.hp = 1e6;
+    const victim = world.addUnit(WAYFINDER, 'red', at(-1100, 0));
+    const poker = world.addUnit(WAYFINDER, 'blue', at(-650, -300));
+    run(1);
+    expect(red.order).toEqual({ kind: 'attack', targetId: target.id });
+    expect(minion.order).toEqual({ kind: 'attack', targetId: bait.id });
+    world.issue({ type: 'cast', unitId: poker.id, slot: 'Q', target: victim.pos });
+    run(1);
+    expect(victim.hp).toBeLessThan(victim.def.maxHp - 90); // the bolt landed
+    expect(red.order).toEqual({ kind: 'attack', targetId: poker.id });
+    expect(minion.order).toEqual({ kind: 'attack', targetId: bait.id });
+
+    // A basic attack on the same champion does draw the minion.
+    world.issue({ type: 'attack', unitId: poker.id, targetId: victim.id });
+    run(1.5);
+    expect(minion.order).toEqual({ kind: 'attack', targetId: poker.id });
   });
 
   it('switches from a minion to a champion who hits an allied champion in its range', () => {
     const { world, run, turret, events } = setup();
     const red = turret('red');
     const minion = world.addUnit(MELEE_MINION, 'blue', { x: red.pos.x - 300, y: red.pos.y });
-    minion.def = { ...minion.def, maxHp: 1e6, moveSpeed: 0, attackDamage: 0 };
+    tweak(minion, { maxHp: 1e6, moveSpeed: 0, attackDamage: 0 });
     minion.hp = 1e6;
     const victim = world.addUnit(WAYFINDER, 'red', { x: red.pos.x + 200, y: red.pos.y });
     const attacker = world.addUnit(WAYFINDER, 'blue', { x: red.pos.x - 450, y: red.pos.y + 200 });
@@ -157,7 +227,7 @@ describe('minion targeting', () => {
     const redMinion = world.addUnit(CASTER_MINION, 'red', { x: x + 400, y });
     const blueMinion = world.addUnit(MELEE_MINION, 'blue', { x: x + 300, y });
     for (const m of [redMinion, blueMinion]) {
-      m.def = { ...m.def, maxHp: 1e6 };
+      tweak(m, { maxHp: 1e6 });
       m.hp = 1e6;
     }
     const victim = world.addUnit(WAYFINDER, 'blue', { x: x - 100, y: y + 300 });
@@ -166,7 +236,7 @@ describe('minion targeting', () => {
     expect(redMinion.order).toEqual({ kind: 'attack', targetId: blueMinion.id }); // closest minion first
 
     world.issue({ type: 'attack', unitId: harasser.id, targetId: victim.id });
-    run(1.5);
+    run(2.5);
     expect(blueMinion.order).toEqual({ kind: 'attack', targetId: harasser.id });
     expect(damageTo(events, harasser).some((e) => e.sourceId === blueMinion.id)).toBe(true);
   });
@@ -183,6 +253,66 @@ describe('minion targeting', () => {
   });
 });
 
+describe('minion damage and aggro', () => {
+  it('deals 60% damage to champions, and bonus damage to minions from their current health', () => {
+    const { world, run, events } = setup();
+    const caster = world.addUnit(CASTER_MINION, 'red', { x: 4300, y: 750 });
+    const champ = world.addUnit(WAYFINDER, 'blue', { x: 3900, y: 750 });
+    run(2);
+    expect(damageTo(events, champ).filter((e) => e.sourceId === caster.id)[0].amount).toBeCloseTo(21 * 0.6);
+
+    const melee = world.addUnit(MELEE_MINION, 'blue', { x: 4250, y: 750 });
+    world.removeUnit(champ.id);
+    run(2);
+    const first = damageTo(events, melee).find((e) => e.sourceId === caster.id)!;
+    expect(first.amount).toBeCloseTo(21 + MELEE_MINION.maxHp * 0.035);
+  });
+
+  it('only notices what comes within 500 units', () => {
+    const { world, run } = setup();
+    const minion = world.addUnit(MELEE_MINION, 'red', { x: 4000, y: 750 });
+    tweak(minion, { moveSpeed: 0 });
+    const champ = world.addUnit(WAYFINDER, 'blue', { x: 4000 - MINION_ACQUISITION_RANGE - 65 - 40, y: 750 });
+    run(1);
+    expect(minion.order.kind).not.toBe('attack');
+    champ.pos = { x: 4000 - MINION_ACQUISITION_RANGE - 65 + 40, y: 750 };
+    run(1);
+    expect(minion.order).toEqual({ kind: 'attack', targetId: champ.id });
+  });
+
+  it('drops a champion for the closest minion once its call for help wears off', () => {
+    const { world, run } = setup();
+    const x = 4000;
+    const y = 750;
+    const minion = world.addUnit(CASTER_MINION, 'blue', { x, y });
+    const enemyMinion = world.addUnit(MELEE_MINION, 'red', { x: x + 300, y });
+    for (const m of [minion, enemyMinion]) tweak(m, { moveSpeed: 0, maxHp: 1e6 });
+    minion.hp = enemyMinion.hp = 1e6;
+    const ally = world.addUnit(WAYFINDER, 'blue', { x: x - 200, y: y + 300 });
+    const harasser = world.addUnit(WAYFINDER, 'red', { x: x + 200, y: y + 300 });
+    tweak(harasser, { maxHp: 1e6 });
+    harasser.hp = 1e6;
+    world.issue({ type: 'attack', unitId: harasser.id, targetId: ally.id });
+    run(1);
+    expect(minion.order).toEqual({ kind: 'attack', targetId: harasser.id });
+    world.issue({ type: 'stop', unitId: harasser.id });
+    run(CALL_SECONDS + 1);
+    expect(minion.order).toEqual({ kind: 'attack', targetId: enemyMinion.id });
+  });
+
+  it('no longer answers a champion hitting allied minions (patch 26.10)', () => {
+    const { world, run } = setup();
+    const minion = world.addUnit(CASTER_MINION, 'blue', { x: 4000, y: 750 });
+    const enemyMinion = world.addUnit(MELEE_MINION, 'red', { x: 4300, y: 750 });
+    const farmer = world.addUnit(WAYFINDER, 'red', { x: 4200, y: 1000 });
+    for (const m of [minion, enemyMinion]) tweak(m, { moveSpeed: 0, maxHp: 1e6 });
+    minion.hp = enemyMinion.hp = 1e6;
+    world.issue({ type: 'attack', unitId: farmer.id, targetId: minion.id });
+    run(2);
+    expect(minion.order).toEqual({ kind: 'attack', targetId: enemyMinion.id });
+  });
+});
+
 describe('champion abilities on the lane', () => {
   it('Rune Orb passes through minions to the champion behind them', () => {
     const { world, run, events } = setup();
@@ -195,7 +325,7 @@ describe('champion abilities on the lane', () => {
     expect(foe.statuses.some((s) => s.kind === 'mark')).toBe(true);
   });
 
-  it('Arcane Bolt stops on the first minion; the barrage deals half damage to minions', () => {
+  it('Arcane Bolt stops on the first minion; the barrage deals 150 to minions', () => {
     const { world, run, events } = setup();
     const me = world.addUnit(WAYFINDER, 'blue', { x: 3500, y: 750 });
     const minion = world.addUnit(SIEGE_MINION, 'red', { x: 3900, y: 750 });
@@ -207,7 +337,7 @@ describe('champion abilities on the lane', () => {
 
     world.issue({ type: 'cast', unitId: me.id, slot: 'R', target: foe.pos });
     run(2);
-    expect(damageTo(events, minion).filter((e) => e.source === 'R').map((e) => e.amount)).toEqual([175]);
+    expect(damageTo(events, minion).filter((e) => e.source === 'R').map((e) => e.amount)).toEqual([150]);
     expect(damageTo(events, foe).filter((e) => e.source === 'R').map((e) => e.amount)).toEqual([350]);
   });
 });
@@ -232,7 +362,7 @@ describe('PracticeBot on the lane', () => {
     const bot = new PracticeBot(world, botUnit.id, player.id, () => 0.5);
     const blueTurret = turret('blue');
     let closest = Infinity;
-    for (let i = 0; i < 45 * TICK_RATE; i++) {
+    for (let i = 0; i < 80 * TICK_RATE; i++) {
       bot.update(STEP);
       lane.update(STEP);
       world.step(STEP);

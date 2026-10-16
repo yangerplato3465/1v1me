@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MARKSMAN, TICK_RATE, type SkillshotAbility } from './defs';
+import { MARKSMAN, TICK_RATE, atRank, type SkillshotAbility } from './defs';
 import { World, type SimEvent } from './world';
 
 const STEP = 1 / TICK_RATE;
@@ -72,7 +72,7 @@ describe('Q skillshot', () => {
     world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: foe.pos });
     const hits = damageTo(run(world, 1.5), foe.id);
     expect(hits).toHaveLength(1);
-    expect(hits[0]).toMatchObject({ source: 'Q', amount: Q.damage });
+    expect(hits[0]).toMatchObject({ source: 'Q', amount: atRank(Q.damage, 1) });
   });
 
   it('misses when aimed away and expires at max range', () => {
@@ -86,7 +86,7 @@ describe('Q skillshot', () => {
   it('spends mana once and respects the cooldown', () => {
     const { world, me } = setup();
     world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: { x: 900, y: 800 } });
-    expect(me.mana).toBe(MARKSMAN.maxMana - Q.manaCost);
+    expect(me.mana).toBe(MARKSMAN.maxMana - atRank(Q.manaCost, 1));
     run(world, 1);
     world.issue({ type: 'cast', unitId: me.id, slot: 'Q', target: { x: 900, y: 800 } });
     expect(me.cast).toBeNull();

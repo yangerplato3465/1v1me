@@ -1,6 +1,17 @@
 import {
   ABILITY_SLOTS,
+  BASIC_MAX_RANK,
   CHAMPION_BOUNTY,
+  CHAMPION_KILL_XP,
+  CHAMPION_XP_RANGE,
+  MAX_LEVEL,
+  MINION_XP_RANGE,
+  ULTIMATE_LEVELS,
+  ULTIMATE_MAX_RANK,
+  XP_FOR_LEVEL,
+  XP_SHARE,
+  atRank,
+  growthAt,
   FOUNTAIN_RADIUS,
   FOUNTAIN_REGEN,
   RESPAWN_SECONDS,
@@ -12,7 +23,6 @@ import {
   type BlinkAbility,
   type ChampionDef,
   type DeathMarkAbility,
-  type MarkEffect,
   type SkillshotAbility,
   type UnitKind,
 } from './defs';
@@ -46,16 +56,60 @@ export type Order =
 /** Timed effects on a unit. */
 export type Status =
   | { kind: 'attackSpeed'; stacks: number; perStack: number; remaining: number }
-  | { kind: 'mark'; sourceId: number; remaining: number; effect: MarkEffect }
+  | { kind: 'mark'; sourceId: number; remaining: number; damage: number; manaRefund: number }
   | { kind: 'slow'; amount: number; remaining: number }
   | { kind: 'untargetable'; remaining: number }
   | { kind: 'deathMark'; sourceId: number; remaining: number; stored: number; pct: number; baseDamage: number }
   | { kind: 'executeCooldown'; sourceId: number; remaining: number };
 
+/** A unit's stats at its current level. */
+export interface UnitStats {
+  maxHp: number;
+  maxMana: number;
+  hpRegen: number;
+  manaRegen: number;
+  attackDamage: number;
+  /** Bonus attack speed from levels, as a fraction. */
+  bonusAttackSpeed: number;
+}
+
+/** LoL's per-level stat growth. Units without growth (minions, turrets) stay at their base stats. */
+export function statsAt(def: ChampionDef, level: number): UnitStats {
+  const g = def.growth;
+  const grow = (base: number, per: number | undefined) => base + (per ? growthAt(per, level) : 0);
+  return {
+    maxHp: grow(def.maxHp, g?.maxHp),
+    maxMana: grow(def.maxMana, g?.maxMana),
+    hpRegen: grow(def.hpRegen, g?.hpRegen),
+    manaRegen: grow(def.manaRegen, g?.manaRegen),
+    attackDamage: grow(def.attackDamage, g?.attackDamage),
+    bonusAttackSpeed: g ? growthAt(g.attackSpeed, level) : 0,
+  };
+}
+
+/**
+ * LoL's skill point rules: an ultimate's ranks unlock at levels 6, 11 and 16; a basic
+ * ability's next rank unlocks at every odd level (rank 2 at 3, rank 3 at 5, … rank 5 at 9).
+ */
+export function canRankUp(u: Unit, slot: AbilitySlot): boolean {
+  if (u.skillPoints <= 0 || !u.def.abilities[slot]) return false;
+  const next = u.ranks[slot] + 1;
+  if (slot === 'R') return next <= ULTIMATE_MAX_RANK && u.level >= ULTIMATE_LEVELS[next - 1];
+  return next <= BASIC_MAX_RANK && next <= Math.ceil(u.level / 2);
+}
+
 export interface Unit {
   id: number;
   team: Team;
   def: ChampionDef;
+  level: number;
+  /** Total experience earned. */
+  xp: number;
+  /** Unspent skill points. */
+  skillPoints: number;
+  /** Rank of each ability; 0 = not learned yet. */
+  ranks: Record<AbilitySlot, number>;
+  stats: UnitStats;
   spawn: Vec;
   pos: Vec;
   facing: number;
@@ -97,6 +151,7 @@ export type PlayerCommand =
   | { type: 'attack'; targetId: number }
   | { type: 'attackMove'; target: Vec }
   | { type: 'cast'; slot: AbilitySlot; target: Vec }
+  | { type: 'levelUp'; slot: AbilitySlot }
   | { type: 'stop' };
 
 export type Command = PlayerCommand & { unitId: number };
@@ -152,6 +207,8 @@ export interface GameView {
 export type SimEvent =
   | { type: 'damage'; targetId: number; sourceId: number; amount: number; source: HitSource; detonation: boolean; pos: Vec }
   | { type: 'death'; unitId: number; killerId: number; kind: UnitKind; pos: Vec; bounty: number }
+  | { type: 'levelUp'; unitId: number; level: number }
+  | { type: 'xp'; unitId: number; amount: number }
   | { type: 'respawn'; unitId: number }
   | { type: 'attackStart'; unitId: number }
   | { type: 'attackFired'; unitId: number; targetId: number }
@@ -189,12 +246,20 @@ const TARGET_PICK_RADIUS = 250;
 const DEATH_MARK_FIZZLE_COOLDOWN = 0.5;
 const WORLD_MARGIN = 40;
 const CAST_TRACKING_SECONDS = 5;
-/** How long a hit counts as a call for help to the victim's minions and turret (see lane.ts). */
-const CALL_SECONDS = 0.5;
+/**
+ * How long a hit counts as a call for help (see lane.ts). LoL minions keep a champion that
+ * hit their ally targeted "for a short time afterwards"; the wiki gives no number.
+ */
+export const CALL_SECONDS = 2;
 
 const IDLE: Order = { kind: 'idle' };
 
 const noCooldowns = (): Record<AbilitySlot, number> => ({ Q: 0, W: 0, E: 0, R: 0 });
+
+/** How a new unit starts: at a level with skill points to spend (a real match), or with everything at rank 1 (a sandbox). */
+export interface Progression {
+  level: number;
+}
 
 function clampToWorld(p: Vec): Vec {
   return {
@@ -203,9 +268,9 @@ function clampToWorld(p: Vec): Vec {
   };
 }
 
-/** Attacks per second including bonus attack speed from statuses. */
+/** Attacks per second including bonus attack speed from levels and statuses. */
 export function attackSpeedOf(u: Unit): number {
-  let bonus = 0;
+  let bonus = u.stats.bonusAttackSpeed;
   for (const s of u.statuses) if (s.kind === 'attackSpeed') bonus += s.stacks * s.perStack;
   return u.def.attackSpeed * (1 + bonus);
 }
@@ -232,6 +297,11 @@ export interface CallForHelp {
   attackerId: number;
   victimId: number;
   time: number;
+  /**
+   * Whether minions answer it. In LoL that takes a basic attack or a unit-targeted ability;
+   * skillshots don't draw minions. Turrets answer any damage to an allied champion.
+   */
+  drawsMinions: boolean;
 }
 
 /** Hits from one cast by the caster and by its shadows, for the shared-hit refund. */
@@ -261,23 +331,37 @@ export class World {
   private nextId = 1;
   private events: SimEvent[] = [];
   private readonly casts = new Map<number, CastRecord>();
-  /** Turret id → the champion it keeps shooting and how heated its shots are. */
-  private readonly heat = new Map<number, { targetId: number; stacks: number }>();
+  /** Turret id → how heated its shots at champions are, and when it last shot one. */
+  private readonly heat = new Map<number, { stacks: number; lastShot: number }>();
 
   constructor(options: WorldOptions = {}) {
     this.authoritative = options.authoritative ?? true;
   }
 
-  addUnit(def: ChampionDef, team: Team, spawn: Vec): Unit {
+  /**
+   * Adds a unit. With `progression` a champion starts at that level with all its skill
+   * points unspent, as in a real match. Without it every ability starts at rank 1 at
+   * level 1, which suits tests and sandboxes.
+   */
+  addUnit(def: ChampionDef, team: Team, spawn: Vec, progression?: Progression): Unit {
+    const level = def.growth ? Math.min(MAX_LEVEL, progression?.level ?? 1) : 1;
+    const stats = statsAt(def, level);
+    const ranks = noCooldowns();
+    if (!progression) for (const slot of ABILITY_SLOTS) if (def.abilities[slot]) ranks[slot] = 1;
     const unit: Unit = {
       id: this.nextId++,
       team,
       def,
+      level,
+      xp: XP_FOR_LEVEL[level - 1],
+      skillPoints: progression && def.growth ? level : 0,
+      ranks,
+      stats,
       spawn: { ...spawn },
       pos: { ...spawn },
       facing: team === 'blue' ? 0 : Math.PI,
-      hp: def.maxHp,
-      mana: def.maxMana,
+      hp: stats.maxHp,
+      mana: stats.maxMana,
       order: IDLE,
       attackCooldown: 0,
       windup: null,
@@ -331,7 +415,16 @@ export class World {
 
   issue(cmd: Command): void {
     const u = this.units.get(cmd.unitId);
-    if (!u || !this.isAlive(u)) return;
+    if (!u) return;
+    // Skill points can be spent while dead, as in LoL.
+    if (cmd.type === 'levelUp') {
+      if (canRankUp(u, cmd.slot)) {
+        u.ranks[cmd.slot]++;
+        u.skillPoints--;
+      }
+      return;
+    }
+    if (!this.isAlive(u)) return;
     switch (cmd.type) {
       case 'move':
         this.setOrder(u, { kind: 'move', target: clampToWorld(cmd.target) });
@@ -397,9 +490,11 @@ export class World {
 
   private cast(u: Unit, slot: AbilitySlot, target: Vec): void {
     const ability = u.def.abilities[slot];
-    if (!ability || u.cast || u.dash) return;
+    const rank = u.ranks[slot];
+    if (!ability || rank <= 0 || u.cast || u.dash) return;
     if (this.trySwapRecast(u, slot, ability)) return;
-    if (u.cooldowns[slot] > 0 || u.mana < ability.manaCost) return;
+    const cost = atRank(ability.manaCost, rank);
+    if (u.cooldowns[slot] > 0 || u.mana < cost) return;
 
     let targetId: number | null = null;
     if (ability.kind === 'deathMark') {
@@ -411,8 +506,8 @@ export class World {
     this.cancelWindup(u);
     let dir = normalize(sub(target, u.pos));
     if (dir.x === 0 && dir.y === 0) dir = fromAngle(u.facing);
-    u.mana -= ability.manaCost;
-    u.cooldowns[slot] = ability.cooldown;
+    u.mana -= cost;
+    u.cooldowns[slot] = atRank(ability.cooldown, rank);
     u.facing = angleOf(dir);
     u.cast = { slot, remaining: ability.castTime, total: ability.castTime, dir, target: { ...target }, targetId };
     this.events.push({ type: 'castStart', unitId: u.id, slot });
@@ -468,8 +563,9 @@ export class World {
 
     const fountain = this.fountains[u.team];
     const healing = fountain && isChampion(u) && dist(u.pos, fountain) <= FOUNTAIN_RADIUS ? FOUNTAIN_REGEN : 0;
-    u.hp = Math.min(u.def.maxHp, u.hp + (u.def.hpRegen + healing * u.def.maxHp) * dt);
-    u.mana = Math.min(u.def.maxMana, u.mana + (u.def.manaRegen + healing * u.def.maxMana) * dt);
+    const { maxHp, maxMana, hpRegen, manaRegen } = u.stats;
+    u.hp = Math.min(maxHp, u.hp + (hpRegen + healing * maxHp) * dt);
+    u.mana = Math.min(maxMana, u.mana + (manaRegen + healing * maxMana) * dt);
     for (const slot of ABILITY_SLOTS) u.cooldowns[slot] = Math.max(0, u.cooldowns[slot] - dt);
     u.attackCooldown = Math.max(0, u.attackCooldown - dt);
     this.tickStatuses(u, dt);
@@ -538,6 +634,7 @@ export class World {
     for (const s of expired) {
       if (s.kind === 'deathMark' && this.authoritative) {
         this.damage(u, s.sourceId, s.baseDamage + s.pct * s.stored, 'R', true);
+        if (!this.isAlive(u)) return;
       }
     }
   }
@@ -558,8 +655,8 @@ export class World {
       sourceId: u.id,
       remaining: ability.markDuration,
       stored: 0,
-      pct: ability.storedPct,
-      baseDamage: ability.baseDamage,
+      pct: atRank(ability.storedPct, u.ranks.R),
+      baseDamage: ability.adRatio * u.stats.attackDamage,
     });
     this.events.push({ type: 'deathMarked', unitId: victim.id, sourceId: u.id });
   }
@@ -615,22 +712,26 @@ export class World {
     this.fireHoming(u, target, 'attack', u.def.attackProjectileSpeed, damage);
   }
 
-  /**
-   * LoL's turret rules: shots at minions take a fixed share of their max health, and
-   * consecutive shots at the same champion heat up (+40% each, up to +120%). Switching
-   * targets cools the turret down.
-   */
+  /** Damage of one basic attack against this target, with LoL's turret and minion rules. */
   private attackDamage(u: Unit, target: Unit): number {
     const turret = u.def.turret;
-    if (!turret) return u.def.attackDamage;
-    if (!isChampion(target)) {
-      this.heat.delete(u.id);
-      return target.def.turretDamagePct ? target.def.maxHp * target.def.turretDamagePct : u.def.attackDamage;
+    if (turret) {
+      // Shots at minions take a fixed share of their max health.
+      if (!isChampion(target)) return target.def.turretDamagePct ? target.stats.maxHp * target.def.turretDamagePct : u.stats.attackDamage;
+      // Each shot at a champion heats the turret up (+50%, up to +150%) until it stops shooting champions for a while.
+      const heat = this.heat.get(u.id);
+      const stacks = heat && this.time - heat.lastShot <= turret.heatResetSeconds ? heat.stacks : 0;
+      this.heat.set(u.id, { stacks: Math.min(turret.maxHeatStacks, stacks + 1), lastShot: this.time });
+      return u.stats.attackDamage * (1 + turret.heatPerShot * stacks);
     }
-    const previous = this.heat.get(u.id);
-    const stacks = previous?.targetId === target.id ? previous.stacks : 0;
-    this.heat.set(u.id, { targetId: target.id, stacks: Math.min(turret.maxHeatStacks, stacks + 1) });
-    return u.def.attackDamage * (1 + turret.heatPerShot * stacks);
+    const minion = u.def.minion;
+    if (minion) {
+      if (isChampion(target)) return u.stats.attackDamage * minion.vsChampions;
+      if (isStructure(target)) return u.stats.attackDamage * minion.vsStructures;
+      if (isMinion(target)) return u.stats.attackDamage + target.hp * minion.vsMinionsCurrentHp;
+    }
+    const meleeVsTurret = isStructure(target) && u.def.attackProjectileSpeed <= 0 ? (target.def.turret?.meleeChampionDamageTaken ?? 1) : 1;
+    return u.stats.attackDamage * meleeVsTurret;
   }
 
   private fireHoming(u: Unit, target: Unit, source: HitSource, speed: number, damage: number): void {
@@ -715,14 +816,14 @@ export class World {
       pos: { ...from },
       prev: { ...from },
       speed: ability.speed,
-      damage: ability.damage,
+      damage: atRank(ability.damage, u.ranks[slot]) + (ability.adRatio ?? 0) * u.stats.attackDamage,
       slot,
       dir,
       width: ability.width,
       range: ability.range,
       travelled: 0,
       stopsAtFirstHit: ability.stopsAtFirstHit,
-      subsequentDamage: ability.subsequentDamage ?? ability.damage,
+      subsequentDamage: ability.subsequentDamage === undefined ? atRank(ability.damage, u.ranks[slot]) : atRank(ability.subsequentDamage, u.ranks[slot]),
       hitIds: [],
       castId,
       fromShadow,
@@ -749,7 +850,7 @@ export class World {
         bestScore = score;
       }
     }
-    if (best) this.fireHoming(u, best, slot, ability.bolt.speed, ability.bolt.damage);
+    if (best) this.fireHoming(u, best, slot, ability.bolt.speed, atRank(ability.bolt.damage, u.ranks[slot]));
   }
 
   private spawnShadow(u: Unit, slot: AbilitySlot, at: Vec, dashTo: Vec | null, dashSpeed: number, duration: number): void {
@@ -787,11 +888,11 @@ export class World {
         if (byOwn) this.recordCastHit(castId, enemy.id, false);
         if (byShadows) this.recordCastHit(castId, enemy.id, true);
       }
-      this.hit(enemy, u.id, ability.damage, slot);
+      this.hit(enemy, u.id, atRank(ability.damage, u.ranks[slot]), slot);
       if (!this.isAlive(enemy)) continue;
       if (byShadows && ability.shadowSlow) {
         const { amount, enhancedAmount, duration } = ability.shadowSlow;
-        const strength = byShadows + (byOwn ? 1 : 0) >= 2 ? enhancedAmount : amount;
+        const strength = atRank(byShadows + (byOwn ? 1 : 0) >= 2 ? enhancedAmount : amount, u.ranks[slot]);
         enemy.statuses.push({ kind: 'slow', amount: strength, remaining: duration });
       }
       if (byOwn && ability.cooldownRefund && isChampion(enemy)) {
@@ -819,8 +920,8 @@ export class World {
   private respawn(u: Unit): void {
     u.respawnIn = 0;
     u.pos = { ...u.spawn };
-    u.hp = u.def.maxHp;
-    u.mana = u.def.maxMana;
+    u.hp = u.stats.maxHp;
+    u.mana = u.stats.maxMana;
     u.order = IDLE;
     u.attackCooldown = 0;
     u.cooldowns = noCooldowns();
@@ -896,9 +997,11 @@ export class World {
     const stepLen = Math.min(p.speed * dt, p.range - p.travelled);
     const next = add(p.pos, scale(p.dir, stepLen));
 
-    const ability = this.units.get(p.ownerId)?.def.abilities[p.slot];
+    const owner = this.units.get(p.ownerId);
+    const ability = owner?.def.abilities[p.slot];
     const championsOnly = ability?.kind === 'skillshot' && !!ability.championsOnly;
-    const minionPct = ability?.kind === 'skillshot' ? (ability.minionDamagePct ?? 1) : 1;
+    const minionDamage =
+      ability?.kind === 'skillshot' && ability.minionDamage !== undefined ? atRank(ability.minionDamage, owner!.ranks[p.slot]) : undefined;
     const hits: { unit: Unit; at: number }[] = [];
     for (const u of this.units.values()) {
       if (u.team === p.team || !this.isTargetable(u) || p.hitIds.includes(u.id)) continue;
@@ -910,7 +1013,7 @@ export class World {
     hits.sort((a, b) => a.at - b.at);
 
     const ctx: HitContext = { castId: p.castId, fromShadow: p.fromShadow };
-    const scaled = (unit: Unit, amount: number) => (isMinion(unit) ? amount * minionPct : amount);
+    const scaled = (unit: Unit, amount: number) => (isMinion(unit) && minionDamage !== undefined ? minionDamage : amount);
     if (p.stopsAtFirstHit && hits.length) {
       p.pos = lerpVec(p.pos, next, hits[0].at);
       this.hit(hits[0].unit, p.ownerId, scaled(hits[0].unit, p.damage), p.slot, ctx);
@@ -940,7 +1043,8 @@ export class World {
     const attacker = this.units.get(sourceId);
     const ability = attacker && source !== 'attack' ? attacker.def.abilities[source] : undefined;
     const appliesMark = ability?.kind === 'skillshot' ? ability.onHit?.mark : undefined;
-    this.calls.push({ attackerId: sourceId, victimId: target.id, time: this.time });
+    const drawsMinions = source === 'attack' || ability?.kind === 'deathMark';
+    this.calls.push({ attackerId: sourceId, victimId: target.id, time: this.time, drawsMinions });
 
     if (source === 'attack' && attacker && !isStructure(target)) this.applyExecutePassive(attacker, target);
     if (amount > 0) this.damage(target, sourceId, amount, source, false);
@@ -951,9 +1055,10 @@ export class World {
     if (markIndex >= 0 && !appliesMark && this.isAlive(target)) {
       const mark = target.statuses[markIndex] as Extract<Status, { kind: 'mark' }>;
       target.statuses.splice(markIndex, 1);
-      this.damage(target, sourceId, mark.effect.detonateDamage, source, true);
-      if (attacker && ability) {
-        attacker.mana = Math.min(attacker.def.maxMana, attacker.mana + mark.effect.abilityManaRefund + ability.manaCost);
+      this.damage(target, sourceId, mark.damage, source, true);
+      if (attacker && ability && source !== 'attack') {
+        const refund = mark.manaRefund + atRank(ability.manaCost, attacker.ranks[source]);
+        attacker.mana = Math.min(attacker.stats.maxMana, attacker.mana + refund);
       }
     }
 
@@ -964,7 +1069,14 @@ export class World {
     }
     if (appliesMark && this.isAlive(target)) {
       target.statuses = target.statuses.filter((s) => !(s.kind === 'mark' && s.sourceId === sourceId));
-      target.statuses.push({ kind: 'mark', sourceId, remaining: appliesMark.duration, effect: appliesMark });
+      const rank = source === 'attack' ? 1 : attacker.ranks[source];
+      target.statuses.push({
+        kind: 'mark',
+        sourceId,
+        remaining: appliesMark.duration,
+        damage: atRank(appliesMark.detonateDamage, rank),
+        manaRefund: appliesMark.abilityManaRefund,
+      });
       this.events.push({ type: 'marked', unitId: target.id, sourceId });
     }
     this.grantPassiveStack(attacker);
@@ -974,10 +1086,12 @@ export class World {
   private applyExecutePassive(attacker: Unit, target: Unit): void {
     const passive = attacker.def.passive;
     if (passive?.kind !== 'executeAttacks') return;
-    if (target.hp >= target.def.maxHp * passive.hpThreshold) return;
+    if (target.hp >= target.stats.maxHp * passive.hpThreshold) return;
     if (target.statuses.some((s) => s.kind === 'executeCooldown' && s.sourceId === attacker.id)) return;
     target.statuses.push({ kind: 'executeCooldown', sourceId: attacker.id, remaining: passive.perTargetCooldown });
-    this.damage(target, attacker.id, target.def.maxHp * passive.maxHpPct, 'attack', false);
+    let pct = 0;
+    for (const [from, value] of passive.maxHpPctByLevel) if (attacker.level >= from) pct = value;
+    this.damage(target, attacker.id, target.stats.maxHp * pct, 'attack', false);
   }
 
   /** Refunds the shared-hit resource once, when the caster and a shadow hit the same enemy with one cast. */
@@ -988,9 +1102,12 @@ export class World {
     if (record.refunded || !record.own.has(targetId) || !record.shadow.has(targetId)) return;
     record.refunded = true;
     const owner = this.units.get(record.ownerId);
-    const shadowAbility = owner && Object.values(owner.def.abilities).find((a) => a?.kind === 'shadow');
-    if (owner && shadowAbility?.kind === 'shadow') {
-      owner.mana = Math.min(owner.def.maxMana, owner.mana + shadowAbility.sharedHitRefund);
+    if (!owner) return;
+    for (const slot of ABILITY_SLOTS) {
+      const shadowAbility = owner.def.abilities[slot];
+      if (shadowAbility?.kind !== 'shadow') continue;
+      owner.mana = Math.min(owner.stats.maxMana, owner.mana + atRank(shadowAbility.sharedHitRefund, owner.ranks[slot]));
+      return;
     }
   }
 
@@ -1026,6 +1143,53 @@ export class World {
     this.shadows = this.shadows.filter((s) => s.ownerId !== target.id);
     const bounty = target.def.bounty ?? (kind === 'champion' ? CHAMPION_BOUNTY : 0);
     this.events.push({ type: 'death', unitId: target.id, killerId: sourceId, kind, pos: { ...target.pos }, bounty });
+    if (this.authoritative) this.awardXp(target, sourceId);
+  }
+
+  // --- experience and levels ---------------------------------------------------
+
+  /**
+   * LoL's experience on death: a minion's goes to enemy champions within 1500, split by how
+   * many share it; a champion's (by its level) to enemy champions within 1600 and always to
+   * the killer, adjusted by level difference. Turrets give none.
+   */
+  private awardXp(victim: Unit, killerId: number): void {
+    const enemies = [...this.units.values()].filter((u) => isChampion(u) && u.team !== victim.team);
+    if (isMinion(victim) && victim.def.xp) {
+      const near = enemies.filter((u) => this.isAlive(u) && dist(u.pos, victim.pos) <= MINION_XP_RANGE);
+      const share = XP_SHARE[Math.min(near.length, XP_SHARE.length) - 1];
+      for (const u of near) this.gainXp(u, victim.def.xp * share);
+      return;
+    }
+    if (!isChampion(victim)) return;
+    const base = CHAMPION_KILL_XP[victim.level - 1];
+    const near = enemies.filter((u) => u.id === killerId || (this.isAlive(u) && dist(u.pos, victim.pos) <= CHAMPION_XP_RANGE));
+    const share = near.length ? XP_SHARE[Math.min(near.length, XP_SHARE.length) - 1] : 0;
+    for (const u of near) {
+      // 20% less (or more) per level of difference beyond the first, never below 40%.
+      const diff = u.level - victim.level;
+      const factor = diff > 1 ? Math.max(0.4, 1 - 0.2 * (diff - 1)) : diff < -1 ? 1 + 0.2 * (-diff - 1) : 1;
+      this.gainXp(u, base * share * factor);
+    }
+  }
+
+  /** Adds experience, levelling up as thresholds are crossed. */
+  gainXp(u: Unit, amount: number): void {
+    if (!u.def.growth || u.level >= MAX_LEVEL || amount <= 0) return;
+    u.xp = Math.min(XP_FOR_LEVEL[MAX_LEVEL - 1], u.xp + amount);
+    this.events.push({ type: 'xp', unitId: u.id, amount });
+    while (u.level < MAX_LEVEL && u.xp >= XP_FOR_LEVEL[u.level]) {
+      const before = u.stats;
+      u.level++;
+      u.skillPoints++;
+      u.stats = statsAt(u.def, u.level);
+      // Like LoL, the health and mana a level adds are added to the current amounts too.
+      if (this.isAlive(u)) {
+        u.hp += u.stats.maxHp - before.maxHp;
+        u.mana += u.stats.maxMana - before.maxMana;
+      }
+      this.events.push({ type: 'levelUp', unitId: u.id, level: u.level });
+    }
   }
 
   // --- collisions -----------------------------------------------------------

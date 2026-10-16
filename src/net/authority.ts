@@ -1,11 +1,15 @@
 import { PracticeBot } from '../sim/bot';
-import { FOUNTAINS, PLAYABLE, TICK_RATE, WAYFINDER } from '../sim/defs';
+import { FOUNTAINS, PLAYABLE, START_LEVEL, TICK_RATE, WAYFINDER } from '../sim/defs';
 import { Lane } from '../sim/lane';
 import { World, type Team } from '../sim/world';
 import { parseCommandMessage, toUnitSnapshot, type Snapshot, type Welcome } from './protocol';
 
 export interface AuthorityOptions {
-  /** Turrets and minion waves (default true). Tests of other systems turn them off. */
+  /**
+   * The lane match (default true): turrets, minion waves, and champions starting at level 3
+   * with their skill points unspent. Tests of other systems turn it off, which gives a
+   * sandbox with every ability at rank 1.
+   */
   lane?: boolean;
 }
 
@@ -38,12 +42,13 @@ export class Authority {
     const taken = new Set([...this.seats.values()].map((s) => s.team));
     const team: Team = taken.has('blue') ? 'red' : 'blue';
     const def = PLAYABLE.find((c) => c.id === champ) ?? PLAYABLE[0];
-    const unit = this.world.addUnit(def, team, FOUNTAINS[team]);
+    const progression = this.lane ? { level: START_LEVEL } : undefined;
+    const unit = this.world.addUnit(def, team, FOUNTAINS[team], progression);
     this.seats.set(seatId, { unitId: unit.id, team, lastSeq: -1, lastSeqTick: -1 });
 
     if (practice && !this.bot) {
       const botTeam: Team = team === 'blue' ? 'red' : 'blue';
-      const botUnit = this.world.addUnit(WAYFINDER, botTeam, FOUNTAINS[botTeam]);
+      const botUnit = this.world.addUnit(WAYFINDER, botTeam, FOUNTAINS[botTeam], progression);
       this.bot = new PracticeBot(this.world, botUnit.id, unit.id);
     }
     if (this.bot || this.seats.size >= 2) this.started = true;

@@ -3,6 +3,7 @@ import {
   SHADEBLADE,
   TICK_RATE,
   WAYFINDER,
+  atRank,
   type AreaAbility,
   type DeathMarkAbility,
   type ExecuteAttackPassive,
@@ -12,6 +13,8 @@ import {
 import { World, isUntargetable, moveSpeedOf, type SimEvent, type Unit, type WorldOptions } from './world';
 
 const STEP = 1 / TICK_RATE;
+/** Values at rank 1: these units start with every ability at rank 1 (World.addUnit's sandbox default). */
+const r1 = (v: Parameters<typeof atRank>[0]) => atRank(v, 1);
 const Q = SHADEBLADE.abilities.Q as SkillshotAbility;
 const W = SHADEBLADE.abilities.W as ShadowAbility;
 const E = SHADEBLADE.abilities.E as AreaAbility;
@@ -48,9 +51,9 @@ describe('Shadeblade basics', () => {
     expect(world.projectiles).toHaveLength(0);
 
     cast(world, me, 'E', me.pos);
-    expect(me.mana).toBe(SHADEBLADE.maxMana - E.manaCost);
+    expect(me.mana).toBe(SHADEBLADE.maxMana - r1(E.manaCost));
     run(world, 1);
-    expect(me.mana).toBeCloseTo(SHADEBLADE.maxMana - E.manaCost + SHADEBLADE.manaRegen, 3);
+    expect(me.mana).toBeCloseTo(SHADEBLADE.maxMana - r1(E.manaCost) + SHADEBLADE.manaRegen, 3);
   });
 
   it('passive: attacks on a target under 50% add 5% of its max health, once per 10 s per target', () => {
@@ -59,7 +62,7 @@ describe('Shadeblade basics', () => {
     foe.hp = foe.def.maxHp * 0.4;
     world.issue({ type: 'attack', unitId: me.id, targetId: foe.id });
     const first = damageTo(run(world, 0.5), foe).map((h) => h.amount);
-    expect(first).toEqual([foe.def.maxHp * PASSIVE.maxHpPct, SHADEBLADE.attackDamage]);
+    expect(first).toEqual([foe.def.maxHp * PASSIVE.maxHpPctByLevel[0][1], SHADEBLADE.attackDamage]);
 
     const second = damageTo(run(world, 1.6), foe).map((h) => h.amount);
     expect(second).toEqual([SHADEBLADE.attackDamage]); // passive on cooldown for this target
@@ -71,8 +74,8 @@ describe('Shadeblade Q (Night Star)', () => {
     const { world, me, foes } = setup([{ x: 800, y: 800 }, { x: 1100, y: 800 }]);
     cast(world, me, 'Q', { x: 1400, y: 800 });
     const events = run(world, 1);
-    expect(damageTo(events, foes[0]).map((h) => h.amount)).toEqual([Q.damage]);
-    expect(damageTo(events, foes[1]).map((h) => h.amount)).toEqual([Q.subsequentDamage]);
+    expect(damageTo(events, foes[0]).map((h) => h.amount)).toEqual([r1(Q.damage)]);
+    expect(damageTo(events, foes[1]).map((h) => h.amount)).toEqual([r1(Q.subsequentDamage!)]);
   });
 });
 
@@ -87,8 +90,8 @@ describe('Shadeblade W (Echo Shadow)', () => {
     const before = me.mana;
     cast(world, me, 'Q', foes[0].pos);
     const hits = damageTo(run(world, 1), foes[0]);
-    expect(hits.map((h) => h.amount)).toEqual([Q.damage, Q.damage]); // one shuriken from each
-    expect(me.mana).toBeCloseTo(before - Q.manaCost + W.sharedHitRefund + SHADEBLADE.manaRegen * 1, 3);
+    expect(hits.map((h) => h.amount)).toEqual([r1(Q.damage), r1(Q.damage)]); // one shuriken from each
+    expect(me.mana).toBeCloseTo(before - r1(Q.manaCost) + r1(W.sharedHitRefund) + SHADEBLADE.manaRegen * 1, 3);
   });
 
   it('recast swaps places with the shadow, once, and the shadow expires', () => {
@@ -118,10 +121,10 @@ describe('Shadeblade E (Umbral Slash)', () => {
     cast(world, me, 'E', me.pos);
     events.push(...world.drainEvents());
 
-    for (const foe of foes) expect(damageTo(events, foe).map((h) => h.amount)).toEqual([E.damage]);
+    for (const foe of foes) expect(damageTo(events, foe).map((h) => h.amount)).toEqual([r1(E.damage)]);
     expect(nearMe.statuses.some((s) => s.kind === 'slow')).toBe(false);
-    expect(moveSpeedOf(nearShadow)).toBeCloseTo(WAYFINDER.moveSpeed * (1 - E.shadowSlow!.amount));
-    expect(moveSpeedOf(between)).toBeCloseTo(WAYFINDER.moveSpeed * (1 - E.shadowSlow!.enhancedAmount));
+    expect(moveSpeedOf(nearShadow)).toBeCloseTo(WAYFINDER.moveSpeed * (1 - r1(E.shadowSlow!.amount)));
+    expect(moveSpeedOf(between)).toBeCloseTo(WAYFINDER.moveSpeed * (1 - r1(E.shadowSlow!.enhancedAmount)));
     // Two champions inside his own slash (nearMe, between): W loses 3 s each.
     expect(me.cooldowns.W).toBeCloseTo(10 - 2 * E.cooldownRefund!.seconds);
     expect(events.filter((e) => e.type === 'slash')).toHaveLength(2);
@@ -159,7 +162,7 @@ describe('Shadeblade R (Final Mark)', () => {
     const dealt = rest.filter((h) => !h.detonation).reduce((sum, h) => sum + h.amount, 0);
     const detonation = rest.filter((h) => h.detonation);
     expect(dealt).toBeGreaterThan(0);
-    expect(detonation.map((h) => h.amount)).toEqual([expect.closeTo(R.storedPct * dealt, 6)]);
+    expect(detonation.map((h) => h.amount)).toEqual([expect.closeTo(R.adRatio * SHADEBLADE.attackDamage + r1(R.storedPct) * dealt, 6)]);
   });
 
   it('needs an enemy within range near the cursor, and its recast swaps back to the shadow', () => {

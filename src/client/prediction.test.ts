@@ -153,11 +153,12 @@ describe('Predictor', () => {
 
     // Straight through the turret: he has to slide around it.
     h.issue({ type: 'move', target: { x: turret.pos.x + 600, y: turret.pos.y } });
-    h.run(TICK_RATE * 9); // the first wave spawns on the way
+    h.run(TICK_RATE * 9);
 
     const end = h.authoritative();
     expect(end.x).toBeCloseTo(turret.pos.x + 600, 6);
     expect(end.y).toBeCloseTo(start.y, 6);
+    h.run(TICK_RATE * 22); // the first wave walks past him
     expect([...h.server.world.units.values()].some((u) => u.def.kind === 'minion')).toBe(true);
     expect(Math.max(...h.corrections)).toBeLessThan(1e-6);
     expect(dist(h.predicted(), end)).toBeLessThan(1e-6);

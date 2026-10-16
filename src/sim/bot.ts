@@ -1,6 +1,6 @@
-import { ABILITY_SLOTS, type AbilityDef, type AbilitySlot } from './defs';
+import { ABILITY_SLOTS, atRank, type AbilityDef, type AbilitySlot } from './defs';
 import { add, clamp, dist, len, lerpVec, normalize, scale, sub, type Vec } from './math';
-import { isMinion, isStructure, type PlayerCommand, type Unit, type World } from './world';
+import { canRankUp, isMinion, isStructure, type PlayerCommand, type Unit, type World } from './world';
 
 export interface BotOptions {
   /** Seconds before it reacts to a skillshot it can see coming (from the start of the cast). */
@@ -54,6 +54,7 @@ export class PracticeBot {
     const me = this.world.units.get(this.selfId);
     const foe = this.world.units.get(this.foeId);
     if (!me || !foe) return;
+    this.spendSkillPoints(me);
     this.trackFoe(foe, dt);
     if (!this.world.isAlive(me) || me.cast || me.dash) return;
 
@@ -83,6 +84,24 @@ export class PracticeBot {
 
   private issue(cmd: PlayerCommand): void {
     this.world.issue({ ...cmd, unitId: this.selfId });
+  }
+
+  /**
+   * Like most players: the ultimate whenever it can, one rank in each basic ability first,
+   * then max Q, then W (E for shadow champions, whose E is their wave clear).
+   */
+  private spendSkillPoints(me: Unit): void {
+    const order: AbilitySlot[] = me.def.shadowMimics ? ['Q', 'E', 'W'] : ['Q', 'W', 'E'];
+    while (me.skillPoints > 0) {
+      const unlearned = order.find((slot) => me.ranks[slot] === 0 && canRankUp(me, slot));
+      const slot = canRankUp(me, 'R') ? 'R' : (unlearned ?? order.find((s) => canRankUp(me, s)));
+      if (!slot) return;
+      this.issue({ type: 'levelUp', slot });
+    }
+  }
+
+  private cost(me: Unit, slot: AbilitySlot, ability: AbilityDef): number {
+    return atRank(ability.manaCost, me.ranks[slot]);
   }
 
   private trackFoe(foe: Unit, dt: number): void {
@@ -155,7 +174,7 @@ export class PracticeBot {
   private readySlot(me: Unit, match: (a: AbilityDef) => boolean): AbilitySlot | null {
     for (const slot of ABILITY_SLOTS) {
       const a = me.def.abilities[slot];
-      if (a && match(a) && me.cooldowns[slot] <= 0 && me.mana >= a.manaCost) return slot;
+      if (a && match(a) && me.ranks[slot] > 0 && me.cooldowns[slot] <= 0 && me.mana >= this.cost(me, slot, a)) return slot;
     }
     return null;
   }
@@ -176,13 +195,13 @@ export class PracticeBot {
   /** Casts at most one ability per decision. Returns true if it did. */
   private useAbility(me: Unit, foe: Unit, foeSafe = false): boolean {
     const d = dist(me.pos, foe.pos);
-    const myHp = me.hp / me.def.maxHp;
-    const foeHp = foe.hp / foe.def.maxHp;
+    const myHp = me.hp / me.stats.maxHp;
+    const foeHp = foe.hp / foe.stats.maxHp;
     const targetable = this.world.isTargetable(foe);
 
     for (const slot of ['R', 'W', 'E', 'Q'] as AbilitySlot[]) {
       const ability = me.def.abilities[slot];
-      if (!ability) continue;
+      if (!ability || me.ranks[slot] <= 0) continue;
 
       // Recasts: swap to a shadow to escape when low, or to close in on a fleeing low target.
       if (ability.kind === 'shadow' || ability.kind === 'deathMark') {
@@ -199,14 +218,15 @@ export class PracticeBot {
         }
       }
 
-      if (me.cooldowns[slot] > 0 || me.mana < ability.manaCost) continue;
+      if (me.cooldowns[slot] > 0 || me.mana < this.cost(me, slot, ability)) continue;
       switch (ability.kind) {
         case 'skillshot': {
           if (!targetable) break;
           const global = ability.range >= 5000;
           if (global) {
             // Save the big one for a kill, or a lucky long shot.
-            if (d > 2500 || (foe.hp > ability.damage * 1.1 && !(foeHp < 0.4 && this.rng() < 0.1))) break;
+            const damage = atRank(ability.damage, me.ranks[slot]) + (ability.adRatio ?? 0) * me.stats.attackDamage;
+            if (d > 2500 || (foe.hp > damage * 1.1 && !(foeHp < 0.4 && this.rng() < 0.1))) break;
           } else if (d > ability.range + foe.def.radius * 0.5) {
             break;
           }
@@ -220,7 +240,7 @@ export class PracticeBot {
             return true;
           }
           const reach = ability.range + me.def.attackRange + me.def.radius + foe.def.radius;
-          const finish = (ability.bolt?.damage ?? 0) + me.def.attackDamage;
+          const finish = (ability.bolt ? atRank(ability.bolt.damage, me.ranks[slot]) : 0) + me.stats.attackDamage;
           if (targetable && !foeSafe && foe.hp <= finish && d <= reach && myHp > 0.4) {
             this.issue({ type: 'cast', slot, target: foe.pos });
             return true;
@@ -332,7 +352,7 @@ export class PracticeBot {
   private shouldFight(me: Unit, foe: Unit, foeSafe: boolean): boolean {
     if (foeSafe || !this.world.isTargetable(foe)) return false;
     const reach = me.def.attackRange + me.def.radius + foe.def.radius;
-    const chase = foe.hp / foe.def.maxHp < 0.3 ? 600 : 250;
+    const chase = foe.hp / foe.stats.maxHp < 0.3 ? 600 : 250;
     return dist(me.pos, foe.pos) <= reach + chase;
   }
 
@@ -344,7 +364,7 @@ export class PracticeBot {
       .filter((u) => u.team !== me.team && isMinion(u) && this.world.isTargetable(u))
       .sort((a, b) => a.hp - b.hp);
     const target =
-      minions.find((m) => m.hp <= me.def.attackDamage && dist(me.pos, m.pos) <= reach(m) + 200) ??
+      minions.find((m) => m.hp <= me.stats.attackDamage && dist(me.pos, m.pos) <= reach(m) + 200) ??
       minions.find((m) => dist(me.pos, m.pos) <= reach(m));
     if (target) {
       if (me.order.kind !== 'attack' || me.order.targetId !== target.id) this.issue({ type: 'attack', targetId: target.id });

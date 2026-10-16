@@ -67,7 +67,7 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
   );
   const renderer = new Renderer(app.stage, session.view, camera, controls, session.playerId);
   const modes = ABILITY_SLOTS.map((slot) => `${slot}: ${CAST_MODES.find((m) => m.value === castModeFor(settings, slot))!.label}`);
-  const hud = new Hud(`${session.note}\n${modes.join('  ')}`);
+  const hud = new Hud(`${session.note}\n${modes.join('  ')}`, (slot) => session.send({ type: 'levelUp', slot }));
   app.stage.addChild(hud.root);
 
   let kills = 0;

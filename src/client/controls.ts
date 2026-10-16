@@ -106,6 +106,12 @@ export class Controls {
     if (e.code === 'Space') e.preventDefault();
     if (e.repeat) return;
     const slot = SLOT_KEYS[e.code];
+    // LoL levels abilities up with Ctrl + key. Browsers keep Ctrl+W (close tab), so Alt + key works too.
+    if (slot && (e.ctrlKey || e.altKey)) {
+      e.preventDefault();
+      this.send({ type: 'levelUp', slot });
+      return;
+    }
     if (slot) {
       if (this.player?.def.abilities[slot]) this.pressSlot(slot);
       return;

@@ -1,6 +1,6 @@
 import { ABILITY_SLOTS, UNIT_DEFS, type AbilitySlot } from '../sim/defs';
 import type { Vec } from '../sim/math';
-import type { Order, PlayerCommand, Projectile, Shadow, SimEvent, Team, Unit } from '../sim/world';
+import { statsAt, type Order, type PlayerCommand, type Projectile, type Shadow, type SimEvent, type Team, type Unit } from '../sim/world';
 
 // Messages shared by the Colyseus server and the browser client. The server is
 // authoritative: clients send numbered CommandMessages, the server sends a Snapshot every
@@ -53,6 +53,10 @@ export interface UnitSnapshot {
   id: number;
   team: Team;
   champ: string;
+  level: number;
+  xp: number;
+  skillPoints: number;
+  ranks: Unit['ranks'];
   spawn: Vec;
   pos: Vec;
   facing: number;
@@ -84,6 +88,10 @@ export function toUnitSnapshot(u: Unit): UnitSnapshot {
     id: u.id,
     team: u.team,
     champ: u.def.id,
+    level: u.level,
+    xp: u.xp,
+    skillPoints: u.skillPoints,
+    ranks: u.ranks,
     spawn: u.spawn,
     pos: u.pos,
     facing: u.facing,
@@ -108,6 +116,11 @@ export function fromUnitSnapshot(s: UnitSnapshot): Unit {
     id: s.id,
     team: s.team,
     def,
+    level: s.level,
+    xp: s.xp,
+    skillPoints: s.skillPoints,
+    ranks: s.ranks,
+    stats: statsAt(def, s.level),
     spawn: s.spawn,
     pos: s.pos,
     facing: s.facing,
@@ -143,6 +156,8 @@ export function parsePlayerCommand(raw: unknown): PlayerCommand | null {
       return isSlot(m.slot) && isVec(m.target)
         ? { type: 'cast', slot: m.slot, target: { x: m.target.x, y: m.target.y } }
         : null;
+    case 'levelUp':
+      return isSlot(m.slot) ? { type: 'levelUp', slot: m.slot } : null;
     case 'stop':
       return { type: 'stop' };
     default:
