@@ -23,7 +23,7 @@ const HELP = [
   'A + LMB  attack-move',
   'Q W E R  cast (modes below; RMB cancels aiming)',
   'S        stop',
-  'Ctrl/Alt + Q W E R   level up an ability (or click +)',
+  'Ctrl/Alt + Q W E R   level up an ability (or click +); Ctrl+W needs full screen',
   'Space    hold to follow your champion (F1 too)',
   'Y        lock / unlock camera',
   'Arrows / screen edge / middle-drag   pan the camera',

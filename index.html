@@ -39,10 +39,17 @@
       #settings .hint { margin: -6px 0 0; color: #9aa7a0; font-size: 13px; }
       #settings .actions { display: flex; gap: 10px; }
       #settings .actions button { min-width: 0; flex: 1; }
+      #fullscreen-game {
+        position: fixed; right: 14px; bottom: 14px; z-index: 2; padding: 8px 12px; cursor: pointer;
+        font: 600 13px Inter, "Segoe UI", system-ui, sans-serif; color: #f4f1e8;
+        background: rgba(12, 20, 16, 0.85); border: 1px solid #c8aa6e; border-radius: 8px;
+      }
+      #fullscreen-game:hover { background: #1c3a28; }
     </style>
   </head>
   <body>
     <div id="app"></div>
+    <button id="fullscreen-game" type="button" hidden>Full screen</button>
     <div id="menu">
       <h1>1v1me</h1>
       <div id="main">
@@ -51,6 +58,7 @@
         <button data-mode="practice">Online practice<small>You vs the bot, on the server</small></button>
         <button data-mode="offline">Offline practice<small>No server needed</small></button>
         <button class="secondary" id="open-settings">Settings</button>
+        <button class="secondary" id="fullscreen-menu" type="button">Full screen</button>
         <div id="menu-error"></div>
       </div>
       <form id="settings">

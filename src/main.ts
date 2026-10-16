@@ -1,6 +1,7 @@
 import { Application } from 'pixi.js';
 import { Camera } from './client/camera';
 import { Controls } from './client/controls';
+import { setupFullscreenButton } from './client/fullscreen';
 import { Hud } from './client/hud';
 import { OfflineSession } from './client/offline';
 import { OnlineSession, defaultServerUrl } from './client/online';
@@ -54,6 +55,9 @@ async function runGame(session: Session, settings: Settings): Promise<void> {
     resolution: Math.min(window.devicePixelRatio, 2),
   });
   document.getElementById('app')!.appendChild(app.canvas);
+  const fullscreenButton = document.getElementById('fullscreen-game') as HTMLButtonElement;
+  fullscreenButton.hidden = false;
+  setupFullscreenButton(fullscreenButton);
 
   const camera = new Camera(session.view.units.get(session.playerId)?.pos ?? { x: WORLD_SIZE.width / 2, y: LANE_Y });
   camera.locked = settings.cameraLocked;
@@ -183,6 +187,7 @@ function showMenu(): void {
   const settings = loadSettings();
   setupSettings(settings);
   setupChampionSelect(settings);
+  setupFullscreenButton(document.getElementById('fullscreen-menu') as HTMLButtonElement);
 
   for (const button of buttons.filter((b) => b.dataset.mode)) {
     button.addEventListener('click', async () => {

@@ -29,7 +29,8 @@ port 2568), and `PORT` to change the server port.
 | A + left-click | Attack-move |
 | Q W E R | Cast, per your cast mode (see Settings). Right-click while aiming cancels |
 | S | Stop |
-| Ctrl/Alt + Q W E R, or click **+** | Spend a skill point on that ability (browsers keep Ctrl+W for closing the tab, so Alt works too) |
+| Ctrl/Alt + Q W E R, or click **+** | Spend a skill point on that ability. Browsers keep Ctrl+W for closing the tab, so Alt works too; in full screen (Chrome/Edge) Ctrl+W reaches the game |
+| **Full screen** button (menu, or bottom-right in game) | Toggle full screen. In Chrome/Edge it also captures the keyboard, so hold Esc to leave |
 | Space (or F1) | Center on your champion; hold to keep following it, release to free the camera again |
 | Y | Lock or unlock the camera |
 | Screen edge, arrow keys, middle-button drag | Pan the free camera |
