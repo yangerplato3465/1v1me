@@ -30,12 +30,17 @@ export class Authority {
   private readonly seats = new Map<string, Seat>();
   private bot: PracticeBot | null = null;
   /** Minions start marching once both champions are in. */
-  private started = false;
+  private _started = false;
   /** Last simulated tick. Commands received now are first simulated in tick + 1. */
   private tick = 0;
 
   constructor(options: AuthorityOptions = {}) {
     this.lane = options.lane === false ? null : new Lane(this.world);
+  }
+
+  /** Whether the match is underway (both champions in, or one against the bot). */
+  get started(): boolean {
+    return this._started;
   }
 
   join(seatId: string, practice = false, champ?: string, summoners?: Record<SummonerSlot, SummonerId>): Welcome {
@@ -54,14 +59,17 @@ export class Authority {
       botUnit.autoAttack = true;
       this.bot = new PracticeBot(this.world, botUnit.id, unit.id);
     }
-    if (this.bot || this.seats.size >= 2) this.started = true;
+    if (this.bot || this.seats.size >= 2) this._started = true;
     return { unitId: unit.id, tickRate: TICK_RATE };
   }
 
   leave(seatId: string): void {
     const seat = this.seats.get(seatId);
     this.seats.delete(seatId);
-    if (seat) this.world.removeUnit(seat.unitId);
+    if (!seat) return;
+    // Leaving a match in progress loses it, so quitting can't dodge a defeat.
+    if (this._started) this.world.concede(seat.team);
+    this.world.removeUnit(seat.unitId);
   }
 
   receive(seatId: string, raw: unknown): void {
@@ -77,7 +85,7 @@ export class Authority {
   /** Advances one tick and returns the snapshot shared by everyone. */
   step(dt: number): Snapshot {
     this.tick++;
-    if (this.started) this.lane?.update(dt);
+    if (this._started) this.lane?.update(dt);
     this.bot?.update(dt);
     this.world.step(dt);
     return {

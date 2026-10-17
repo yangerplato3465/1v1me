@@ -10,10 +10,10 @@ export const CHAMPION_BOUNTY = 300;
 /**
  * How a lane match is won: the first of these ends it. First blood: the first champion to
  * die (to anything) loses. First turret: the first turret to fall loses. CS: the first
- * champion to last-hit this many minions wins.
+ * champion to last-hit this many minions wins. Forfeit: leaving a match in progress loses it.
  */
 export const CS_TO_WIN = 50;
-export type WinReason = 'firstBlood' | 'firstTurret' | 'cs';
+export type WinReason = 'firstBlood' | 'firstTurret' | 'cs' | 'forfeit';
 
 type Sides<T> = { blue: T; red: T };
 

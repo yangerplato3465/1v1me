@@ -47,6 +47,9 @@ export class DuelRoom extends Room {
   onJoin(client: Client, options: JoinOptions = {}): void {
     const champ = typeof options.champ === 'string' ? options.champ : undefined;
     client.send(MSG.welcome, this.match.join(client.sessionId, this.practice, champ, parseSummoners(options.summoners)));
+    // Colyseus reopens a full room when someone leaves unless it was locked by hand, which
+    // would let matchmaking drop a stranger into a match in progress.
+    if (this.match.started) void this.lock();
   }
 
   onLeave(client: Client): void {

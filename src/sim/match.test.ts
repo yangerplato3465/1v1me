@@ -92,4 +92,28 @@ describe('win conditions', () => {
     for (let i = 0; i < TICK_RATE * 2; i++) events.push(...match.step(STEP).events);
     expect(events.filter((e) => e.type === 'gameOver')).toEqual([{ type: 'gameOver', winner: 'blue', reason: 'firstBlood' }]);
   });
+
+  it('leaving a match in progress forfeits it to the player who stayed', () => {
+    const match = new Authority();
+    match.join('a');
+    match.join('b');
+    match.step(STEP);
+    match.leave('b');
+    expect(match.step(STEP).events.filter((e) => e.type === 'gameOver')).toEqual([{ type: 'gameOver', winner: 'blue', reason: 'forfeit' }]);
+    expect(match.world.result).toEqual({ winner: 'blue', reason: 'forfeit' });
+  });
+
+  it('leaving before the opponent arrives, or after the match ended, changes no result', () => {
+    const waiting = new Authority();
+    waiting.join('a');
+    waiting.leave('a');
+    expect(waiting.world.result).toBeNull();
+
+    const over = new Authority();
+    over.join('a');
+    over.join('b');
+    over.world.concede('red');
+    over.leave('a');
+    expect(over.world.result).toEqual({ winner: 'blue', reason: 'forfeit' });
+  });
 });

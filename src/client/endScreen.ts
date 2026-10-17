@@ -17,6 +17,8 @@ export function describeEnd(victory: boolean, reason: WinReason): string {
       return victory ? 'First turret: you destroyed the enemy turret.' : 'First turret: your turret fell first.';
     case 'cs':
       return victory ? `First to ${CS_TO_WIN} CS: you got there first.` : `First to ${CS_TO_WIN} CS: the enemy got there first.`;
+    case 'forfeit':
+      return victory ? 'Forfeit: your opponent left the match.' : 'Forfeit: you left the match.';
   }
 }
 

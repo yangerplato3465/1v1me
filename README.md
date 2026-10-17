@@ -142,6 +142,10 @@ outer turret, and minion waves. The rules follow LoL (minute-0 numbers from the 
   - **First turret:** the side whose turret falls first loses.
   - **First to 50 CS** (`CS_TO_WIN`): the first champion to last-hit 50 minions wins.
 
+  Leaving a match in progress forfeits it: the player who stayed gets Victory. Once a
+  match starts its room is locked, so matchmaking never puts a stranger into it, even
+  after someone leaves.
+
   The HUD lists the conditions and shows both CS counts. When one is met, the game
   freezes: no more time passes, waves stop and the bot stops. A Victory or Defeat screen
   says why and shows K/D, CS and gold. "Back to menu" (or Enter) reloads the page, which

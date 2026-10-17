@@ -1487,7 +1487,16 @@ export class World {
         if (cs >= CS_TO_WIN) result = { winner: killer.team, reason: 'cs' };
       }
     }
-    if (!result) return;
+    if (result) this.end(result);
+  }
+
+  /** A champion's team gives up the match (its player left); the other team wins. */
+  concede(loser: Team): void {
+    if (this.result || !this.winConditions) return;
+    this.end({ winner: loser === 'blue' ? 'red' : 'blue', reason: 'forfeit' });
+  }
+
+  private end(result: MatchResult): void {
     this.result = result;
     this.events.push({ type: 'gameOver', ...result });
   }

@@ -1,6 +1,7 @@
 import { Client, type Room } from '@colyseus/sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { MSG, ROOM_NAME, type Snapshot, type Welcome } from '../src/net/protocol';
+import type { SimEvent } from '../src/sim/world';
 import { OnlineSession } from '../src/client/online';
 import { CHAMPIONS } from '../src/sim/defs';
 import { newRoomCode } from './DuelRoom';
@@ -158,6 +159,27 @@ describe('DuelRoom', () => {
     } finally {
       server.simulateLatency(0);
     }
+  });
+});
+
+describe('leaving', () => {
+  it('forfeits the match to the player who stayed, and nobody new can join it', async () => {
+    const a = track(await client().joinOrCreate(ROOM_NAME, {}));
+    const b = track(await client().joinOrCreate(ROOM_NAME, {}));
+    expect(b.room.roomId).toBe(a.room.roomId);
+    const { unitId } = await a.welcome;
+    const myTeam = unitIn(await until(() => (champions(a.latest()).length === 2 ? a.latest() : null)), unitId)!.team;
+
+    let over: SimEvent | undefined;
+    a.room.onMessage(MSG.snapshot, (s: Snapshot) => (over ??= s.events.find((e) => e.type === 'gameOver')));
+    await b.room.leave();
+    expect(await until(() => over)).toEqual({ type: 'gameOver', winner: myTeam, reason: 'forfeit' });
+
+    // The room is half empty again, but matchmaking must not refill it mid-match.
+    const stranger = await client().joinOrCreate(ROOM_NAME, {});
+    expect(stranger.roomId).not.toBe(a.room.roomId);
+    await expect(client().joinById(a.room.roomId, {})).rejects.toThrow();
+    await Promise.all([a.room.leave(), stranger.leave()]);
   });
 });
 
